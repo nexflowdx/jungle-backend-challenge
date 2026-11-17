@@ -2,7 +2,8 @@
 // Counts exclude hooks and expand test.each for each required integration file.
 export const minimumPersistenceTests = 55;
 export const minimumWalletOpeningTests = 32;
-export const minimumPostgresTests = minimumPersistenceTests + minimumWalletOpeningTests;
+export const minimumWagerInfrastructureTests = 9;
+export const minimumPostgresTests = minimumPersistenceTests + minimumWalletOpeningTests + minimumWagerInfrastructureTests;
 
 export function assertPostgresReport(xml: string): void {
   const root = xml.match(/<testsuites\b([^>]*)>/)?.[1];
@@ -20,6 +21,7 @@ export function assertPostgresReport(xml: string): void {
   const cases = [...xml.matchAll(/<testcase\b([^>]*)>/g)].map(match => match[1]!);
   for (const [file, minimum] of [
     ['postgres', minimumPersistenceTests], ['wallet-opening', minimumWalletOpeningTests],
+    ['wager-processing', minimumWagerInfrastructureTests],
   ] as const) {
     const path = new RegExp(`\\bfile="[^"]*\\/${file}\\.test\\.(?:js|ts)"`);
     const executed = cases.filter(attributes => path.test(attributes)

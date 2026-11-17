@@ -1,8 +1,9 @@
-# Arquitetura implementada até o Marco 4 (integração do Marco 4 pendente)
+# Arquitetura até o incremento 5.1 (integração nova pendente)
 
 Monólito modular NestJS: `WalletsModule`, `WageringModule`, `MessagingModule` e
 `OperationsModule`. O caso de uso de abertura está implementado em Wallets;
-processamento de apostas e entradas HTTP/SQS continuam nos próximos marcos.
+`ProcessWagerTransaction` possui apenas uma estrutura que recusa operações
+indisponíveis. Processamento financeiro e entradas HTTP/SQS continuam nos próximos marcos.
 As camadas serão adicionadas conforme seus casos de uso, preservando o domínio
 em TypeScript puro, sem decorators ou dependências de NestJS/ORM.
 
@@ -113,7 +114,8 @@ Os relacionamentos escalares declaram `wallet_id` e `transaction_id` explicitame
 para corresponder às migrations, preservando `mapToPk` e as dependências da Unit
 of Work. Testes locais verificam metadados, SQL gerado e snapshots sem conectar
 ao banco. O desenvolvedor confirmou a aprovação das regressões do Marco 3 no
-Actions com PostgreSQL real; as regressões novas do Marco 4 aguardam execução.
+Actions com PostgreSQL real. Os Marcos 3 e 4 foram validados nesse ambiente,
+conforme confirmação do desenvolvedor; a integração nova do incremento 5.1 está pendente.
 
 Quatro migrations reversíveis criam Wallet/transações, ledger, correspondência
 financeira e Inbox/Outbox. CHECKs impedem escala excedente, valores especiais,
@@ -148,9 +150,9 @@ compatibilidade com `exactOptionalPropertyTypes`; não altera o runtime. `strict
 17.12 aprovado, em tmpfs/rede interna sem portas publicadas. Seu runner recusa
 outros hosts, bancos e ambientes. A suíte cobre migrations up/down/up, SQL inválido,
 precisão, concorrência de escritores, privilégios e rollback financeiro com
-Inbox/Outbox e abertura atômica. Testes locais pulam explicitamente as duas suítes
+Inbox/Outbox, abertura atômica e infraestrutura transacional de 5.1. Testes locais pulam as três suítes
 PostgreSQL. Não se executa Docker na VPS. O runner exige relatório JUnit com pelo
-menos 87 casos reais: 55 de persistência e 32 de abertura. Cada arquivo deve atingir
+menos 96 casos reais: 55 de persistência, 32 de abertura e 9 de infraestrutura de 5.1. Cada arquivo deve atingir
 seu mínimo com assertivas; hooks não contam. Skips, falhas, relatório ausente ou
 indisponibilidade do banco falham o job. A contagem local de skips inclui hooks.
 
@@ -188,4 +190,35 @@ PostgresWalletOpeningUnitOfWork(orm))`, com ORM inicializado pelo chamador.
 O bootstrap padrão continua sem dependências externas. Não foram adicionados
 endpoints ou consumidores. O workflow manual existente mantém isolamento,
 orçamento zero declarado pelo operador e os mesmos limites de recursos/tempo;
-sua execução para o Marco 4 permanece pendente de autorização.
+os Marcos 3 e 4 foram validados no Actions, conforme confirmação do desenvolvedor.
+
+## Estrutura de processamento — incremento 5.1
+
+`ProcessWagerTransaction` recebe um comando interno provisório com wallet e tipo
+e lança imediatamente `WagerProcessingNotImplementedError`. O retorno é
+`Promise<never>`: não há resultado financeiro, aceite pendente, criação de registro
+nem chamada à porta transacional. Isso também se aplica a OPENING, que continua
+exclusiva do caso de uso de abertura. Não são executadas regras de apostas do domínio.
+
+`WagerProcessingUnitOfWork` prepara a fronteira para os próximos incrementos:
+seu callback não recebe EntityManager nem tipos do ORM. `WageringModule.register`
+fornece a composição explícita, mantendo o bootstrap padrão sem banco.
+
+O adapter PostgreSQL delega à função de infraestrutura `runPostgresTransaction`,
+que abre um fork isolado e executa `transactional`. Retorno depende do commit;
+erros do callback, SQL e commit propagam depois do rollback. A configuração ORM,
+os mappers e as migrations existentes são reutilizados. O adapter de abertura
+permanece intacto; não se extraiu sua implementação já validada.
+
+Os testes unitários verificam indisponibilidade imediata e zero chamadas à
+persistência. Separadamente, os testes PostgreSQL de infraestrutura inspecionam
+o TransactionContext do MikroORM somente no código de teste e gravam fixtures
+descartáveis de wallet. Comprovam escrita efetiva, invisibilidade pré-commit,
+rollback, retry da fixture, propagação de erros SQL/commit e isolamento entre
+callbacks concorrentes. Essas verificações não representam processamento de apostas.
+
+Os nove casos novos serão executados pelo mesmo workflow exclusivamente manual,
+com os 87 casos anteriores e exigência de assertivas por arquivo, sem skips.
+Sua execução com PostgreSQL real permanece pendente de autorização. Idempotência,
+hash canônico, persistência de apostas, locks financeiros, HTTP e SQS continuam
+nos incrementos seguintes. Nenhum estado financeiro ou política de reversão mudou.
