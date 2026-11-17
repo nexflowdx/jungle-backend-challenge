@@ -15,6 +15,7 @@ import { WagerTransactionIdentity, WagerIdentityCollisionError } from '../../src
 import { PostgresWagerProcessingUnitOfWork } from '../../src/modules/wagering/infrastructure/postgres-wager-processing-unit-of-work';
 import { WagerTransactionKind as Kind, WagerTransactionStatus as Status, FailureCode } from '../../src/modules/wagering/domain/wager-transaction.types';
 import { assertPersistenceTestEnvironment } from './environment';
+import { assertHistoricalReplay } from './historical-replay';
 
 const enabled = process.env.PERSISTENCE_INTEGRATION === '1';
 type Target = { id: string; playerId: string; balance: { amount: string; currency: string } };
@@ -133,9 +134,7 @@ describe.skipIf(!enabled)('Atomic REFUND and ROLLBACK PostgreSQL integration (5.
   test.each([Kind.Refund, Kind.Rollback])('%s replay after later BET and client restart preserves the original result', async kind => {
     const target = await open(); const reference = await seed(target); const input = reverse(target, kind, reference.input); const first = await processor().execute(input);
     await processor().execute(command(target, Kind.Bet, { money: { amount: '10.00', currency: 'BRL' } })); const before = await artifacts(target);
-    const restarted = await createPersistence(connection());
-    try { expect(await new ProcessWagerTransaction(new PostgresWagerProcessingUnitOfWork(restarted)).execute(input)).toEqual({ ...first, idempotentReplay: true }); }
-    finally { await restarted.close(true); }
+    await assertHistoricalReplay(orm, input, first);
     expect(await artifacts(target)).toEqual(before); await consistent(target);
   });
   test.each([Kind.Refund, Kind.Rollback])('distinct second %s is rejected while the first remains replayable', async kind => {
@@ -143,9 +142,10 @@ describe.skipIf(!enabled)('Atomic REFUND and ROLLBACK PostgreSQL integration (5.
     const before = await state(target); const second = reverse(target, kind, reference.input); const rejected = await processor().execute(second);
     expect(rejected).toMatchObject({ status: Status.Rejected, failureCode: FailureCode.AlreadyReversed }); expect(await state(target)).toEqual(before);
     await effects(target, second, rejected.transactionId, Status.Rejected);
+    await processor().execute(command(target, Kind.Bet, { money: { amount: '10.00', currency: 'BRL' } }));
     const stored = await artifacts(target);
-    expect(await processor().execute(input)).toEqual({ ...first, idempotentReplay: true });
-    expect(await processor().execute(second)).toEqual({ ...rejected, idempotentReplay: true }); expect(await artifacts(target)).toEqual(stored);
+    await assertHistoricalReplay(orm, input, first);
+    await assertHistoricalReplay(orm, second, rejected); expect(await artifacts(target)).toEqual(stored);
   });
   test.each([[Kind.Refund, Kind.Rollback], [Kind.Rollback, Kind.Refund]] as const)('policy permits %s and %s on the same BET', async (first, second) => {
     const target = await open('200.00'); const bet = command(target, Kind.Bet, { money: { amount: '100.00', currency: 'BRL' } }); await processor().execute(bet);
@@ -160,7 +160,7 @@ describe.skipIf(!enabled)('Atomic REFUND and ROLLBACK PostgreSQL integration (5.
     expect(first).toMatchObject({ status: Status.Rejected, failureCode: FailureCode.ReversalInsufficientFunds, balance: { amount: '0.00' } });
     expect(await state(target)).toEqual(before); await effects(target, input, first.transactionId, Status.Rejected);
     await processor().execute(command(target, Kind.Win)); const funded = await artifacts(target);
-    expect(await processor().execute(input)).toEqual({ ...first, idempotentReplay: true }); expect(await artifacts(target)).toEqual(funded);
+    await assertHistoricalReplay(orm, input, first); expect(await artifacts(target)).toEqual(funded);
     const second = reverse(target, Kind.Rollback, reference.input); const valid = await processor().execute(second);
     expect(valid.status).toBe(Status.Processed); expect((await state(target)).balance).toBe('0.00'); await effects(target, second, valid.transactionId, Status.Processed, 'DEBIT');
   });
@@ -183,10 +183,10 @@ describe.skipIf(!enabled)('Atomic REFUND and ROLLBACK PostgreSQL integration (5.
     await processor().execute(command(target, Kind.Bet)); const moved = await artifacts(target);
     expect(await processor().execute(input)).toEqual({ ...first, idempotentReplay: true }); expect(await artifacts(target)).toEqual(moved);
   });
-  test.each([Kind.Refund, Kind.Rollback])('%s pending replay stays pending after its BET arrives', async kind => {
+  test.each([Kind.Refund, Kind.Rollback])('%s pending replay stays pending after its BET arrives and application restart', async kind => {
     const target = await open(); const input = command(target, kind); const first = await processor().execute(input);
     await processor().execute(command(target, Kind.Bet, { externalTransactionId: input.referenceExternalTransactionId! })); const before = await artifacts(target);
-    expect(await processor().execute(input)).toEqual({ ...first, idempotentReplay: true }); expect(await artifacts(target)).toEqual(before);
+    await assertHistoricalReplay(orm, input, first); expect(await artifacts(target)).toEqual(before);
   });
   test.each([
     [Kind.Refund, 'round'], [Kind.Rollback, 'round'], [Kind.Refund, 'currency'], [Kind.Rollback, 'currency'],

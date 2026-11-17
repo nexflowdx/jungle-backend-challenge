@@ -13,6 +13,7 @@ import { WagerTransactionIdentity, WagerIdentityCollisionError } from '../../src
 import { PostgresWagerProcessingUnitOfWork } from '../../src/modules/wagering/infrastructure/postgres-wager-processing-unit-of-work';
 import { WagerTransactionKind as Kind, WagerTransactionStatus as Status, FailureCode } from '../../src/modules/wagering/domain/wager-transaction.types';
 import { assertPersistenceTestEnvironment } from './environment';
+import { assertHistoricalReplay } from './historical-replay';
 
 const enabled = process.env.PERSISTENCE_INTEGRATION === '1';
 type Target = { id: string; playerId: string; balance: { amount: string; currency: string } };
@@ -134,17 +135,15 @@ describe.skipIf(!enabled)('Atomic WIN and LOSS PostgreSQL integration (5.4)', ()
   test.each([Kind.Win, Kind.Loss])('%s replays the processed snapshot after BET and client restart', async kind => {
     const target = await open(); const input = command(target, kind); const first = await processor().execute(input);
     await processor().execute({ ...command(target, Kind.Win), kind: Kind.Bet, money: { amount: '10.00', currency: 'BRL' } });
-    const restarted = await createPersistence(connection());
-    try { expect(await new ProcessWagerTransaction(new PostgresWagerProcessingUnitOfWork(restarted)).execute(input)).toEqual({ ...first, idempotentReplay: true }); }
-    finally { await restarted.close(true); }
+    await assertHistoricalReplay(orm, input, first);
     await consistent(target, kind === Kind.Win ? '115.00' : '90.00');
   });
-  test.each([Kind.Win, Kind.Loss])('%s replays its original rejection even after a later BET', async kind => {
+  test.each([Kind.Win, Kind.Loss])('%s replays its original rejection after a later BET and application restart', async kind => {
     const target = await open(kind === Kind.Win ? '92233720368547758.07' : '100.00');
     const input = command(target, kind, { money: { amount: '0.01', currency: kind === Kind.Win ? 'BRL' : 'USD' } });
     const first = await processor().execute(input); expect(first.status).toBe(Status.Rejected);
     await processor().execute({ ...command(target, Kind.Win), kind: Kind.Bet, money: { amount: '0.01', currency: 'BRL' } });
-    expect(await processor().execute(input)).toEqual({ ...first, idempotentReplay: true });
+    await assertHistoricalReplay(orm, input, first);
     await consistent(target, kind === Kind.Win ? '92233720368547758.06' : '99.99');
   });
   test.each([Kind.Win, Kind.Loss])('ten concurrent repetitions of %s have one effect and one event set', async kind => {

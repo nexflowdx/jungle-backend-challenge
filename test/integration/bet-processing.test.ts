@@ -14,6 +14,7 @@ import { WagerTransactionIdentity, WagerIdentityCollisionError } from '../../src
 import { PostgresWagerProcessingUnitOfWork } from '../../src/modules/wagering/infrastructure/postgres-wager-processing-unit-of-work';
 import { WagerTransactionKind as Kind, WagerTransactionStatus as Status, FailureCode } from '../../src/modules/wagering/domain/wager-transaction.types';
 import { assertPersistenceTestEnvironment } from './environment';
+import { assertHistoricalReplay } from './historical-replay';
 
 const enabled = process.env.PERSISTENCE_INTEGRATION === '1';
 type Target = { id: string; playerId: string; balance: { amount: string; currency: string } };
@@ -176,9 +177,7 @@ describe.skipIf(!enabled)('Atomic BET PostgreSQL integration (5.3)', () => {
   test.each(['processed', 'rejected'])('replays a %s snapshot after later wallet changes and client restart', async status => {
     const target = await open(); const input = command(target, { money: { amount: status === 'processed' ? '25.00' : '101.00', currency: 'BRL' } });
     const first = await process().execute(input); await process().execute(command(target, { money: { amount: '10.00', currency: 'BRL' } }));
-    const restarted = await createPersistence({ host: 'postgres', port: 5432, dbName: 'jungle_persistence_test', user: 'diagnostic', password: globalThis.process.env.PGPASSWORD! });
-    try { expect(await new ProcessWagerTransaction(new PostgresWagerProcessingUnitOfWork(restarted)).execute(input)).toEqual({ ...first, idempotentReplay: true }); }
-    finally { await restarted.close(true); }
+    await assertHistoricalReplay(orm, input, first);
     expect(await betEvents(target, first.transactionId)).toHaveLength(status === 'processed' ? 2 : 1);
     await consistent(target, status === 'processed' ? '65.00' : '90.00');
   });

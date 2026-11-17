@@ -15,6 +15,7 @@ import { WagerRequestFingerprint } from '../../src/modules/wagering/application/
 import { PostgresWagerProcessingUnitOfWork } from '../../src/modules/wagering/infrastructure/postgres-wager-processing-unit-of-work';
 import { WagerTransactionKind as Kind, WagerTransactionStatus as Status, FailureCode } from '../../src/modules/wagering/domain/wager-transaction.types';
 import { assertPersistenceTestEnvironment } from './environment';
+import { assertHistoricalReplay } from './historical-replay';
 
 const enabled = process.env.PERSISTENCE_INTEGRATION === '1';
 type Target = { id: string; playerId: string; balance: { amount: string; currency: string } };
@@ -111,13 +112,10 @@ describe.skipIf(!enabled)('Durable WIN reference PostgreSQL integration (5.5)', 
   test('replay after wallet movement and client restart returns the stored acceptance', async () => {
     const target = await open(); const input = command(target); const first = await processor().execute(input);
     await processor().execute(unreferenced(target, { kind: Kind.Bet, money: { amount: '10.00', currency: 'BRL' } }));
-    const restarted = await createPersistence(connection());
-    try { expect(await new ProcessWagerTransaction(new PostgresWagerProcessingUnitOfWork(restarted)).execute({ ...input, correlationId: randomUUID() }))
-      .toEqual({ ...first, idempotentReplay: true }); }
-    finally { await restarted.close(true); }
+    await assertHistoricalReplay(orm, input, first);
     expect((await financialState(target)).balance).toBe('90.00'); await pending(target, input, first.transactionId);
   });
-  test('replay does not resolve a pending WIN after its reference arrives', async () => {
+  test('replay stays pending after its reference arrives and application restart', async () => {
     const target = await open(); const input = command(target); const first = await processor().execute(input);
     await processor().execute(unreferenced(target, { kind: Kind.Bet, externalTransactionId: input.referenceExternalTransactionId! }));
     const before = await financialState(target);
@@ -127,6 +125,7 @@ describe.skipIf(!enabled)('Durable WIN reference PostgreSQL integration (5.5)', 
       insertEvents: async () => { throw new Error('Replay attempted another event'); },
     })) };
     expect(await processor(guarded).execute(input)).toEqual({ ...first, idempotentReplay: true });
+    await assertHistoricalReplay(orm, input, first);
     expect(await financialState(target)).toEqual(before); await pending(target, input, first.transactionId);
   });
   test.each(['payload', 'reference', 'external'])('pending identity conflict remains protected: %s', async change => {

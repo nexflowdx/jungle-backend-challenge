@@ -90,7 +90,16 @@ describe('BET application orchestration (5.3)', () => {
     const first = await useCase.execute(input);
     await useCase.execute(command({ idempotencyKey: 'second', externalTransactionId: 'second', money: { amount: '10.00', currency: 'BRL' } }));
     const count = work.events.length; const entries = work.ledger.length;
-    expect(await useCase.execute(input)).toEqual({ ...first, idempotentReplay: true });
+    const replayOnly: WagerProcessingUnitOfWork = { transaction: callback => work.transaction(scope => callback({ ...scope,
+      lockWallet: async id => {
+        const wallet = (await scope.lockWallet(id))!;
+        return new Proxy(wallet, { get(target, key) {
+          if (key === 'balance') throw new Error('Replay must not read the current wallet balance');
+          return Reflect.get(target, key, target);
+        } });
+      },
+    })) };
+    expect(await new ProcessWagerTransaction(replayOnly).execute(input)).toEqual({ ...first, idempotentReplay: true });
     expect(work.events).toHaveLength(count); expect(work.ledger).toHaveLength(entries);
   });
   test('same key and changed payload conflict without a second effect', async () => {

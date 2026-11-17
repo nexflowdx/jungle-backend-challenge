@@ -1,4 +1,4 @@
-# Arquitetura até o incremento 5.6 (integração nova pendente)
+# Arquitetura até o incremento 5.7 (verificações PostgreSQL ampliadas pendentes)
 
 Monólito modular NestJS: `WalletsModule`, `WageringModule`, `MessagingModule` e
 `OperationsModule`. O caso de uso de abertura está implementado em Wallets;
@@ -121,7 +121,9 @@ conforme confirmação do desenvolvedor, assim como os 128 testes até 5.2.
 Os 159 testes até 5.3 também foram validados no Actions, conforme confirmação do
 desenvolvedor. Os 200 casos até 5.4 também foram validados no Actions, conforme
 confirmação do desenvolvedor. Os 236 casos até 5.5 também passaram no Actions,
-conforme confirmação do desenvolvedor. Os casos novos de 5.6 aguardam essa execução.
+conforme confirmação do desenvolvedor. Os 326 casos até 5.6 também passaram no
+Actions, conforme confirmação do desenvolvedor. As verificações ampliadas no 5.7
+ainda aguardam execução nesse ambiente.
 
 Quatro migrations reversíveis criam Wallet/transações, ledger, correspondência
 financeira e Inbox/Outbox. CHECKs impedem escala excedente, valores especiais,
@@ -467,6 +469,57 @@ não consomem reversões, duplicatas, reinício, concorrência de crédito/débi
 identidade, espera real por lock, commit/rollback de concorrentes, leitura da própria
 reversão não confirmada, UNIQUE real e rollback após cada gravação. O runner exige
 326 casos reais, preservando os 236 anteriores, com assertivas e zero skips.
-A execução real dos casos novos permanece pendente no workflow exclusivamente manual.
+Os 326 casos até 5.6 passaram no Actions, conforme confirmação do desenvolvedor.
 Domínio financeiro, quatro migrations e OpenWallet permanecem intactos. Não há HTTP,
 SQS, worker de pendências, publicação externa, commit ou push neste incremento.
+
+
+## Resultado histórico e replay estável — incremento 5.7
+
+A auditoria confirmou que o comportamento de produção já estava implementado.
+Não foram alterados aplicação, adapters, domínio, migrations, runner ou workflow.
+ProcessWagerTransaction.result recebe somente a transação, sem Wallet. O mapper
+reidrata balance/balance_currency para estados terminais e accepted_balance/
+accepted_currency para pendência; o getter balance usa o snapshot de aceitação
+quando não existe resultado terminal. Status, failureCode e ID vêm da mesma
+transação persistida. A função result não calcula nem consulta saldo atual.
+
+A identidade é verificada antes de qualquer processamento de referência/reversão.
+O replay carrega a transação persistida e retorna imediatamente; não reaplica
+movimento, não conclui pendência e não cria eventos. A recuperação de colisão UNIQUE
+após rollback também carrega esse resultado. O lock da wallet foi preservado para
+manter a ordem transacional existente: ler/bloquear a wallet para coordenação não
+significa usar seu saldo para reconstruir a resposta. As constraints existentes
+mantêm resultados terminais e o primeiro snapshot de aceitação imutáveis.
+
+Cobertura auditada e reforçada nos próprios casos existentes:
+
+| Operação/estado | Evidência de histórico e reinicialização |
+|---|---|
+| BET PROCESSED/REJECTED | Saldo muda com outra BET; replay em nova aplicação/conexão mantém resposta original. |
+| WIN/LOSS PROCESSED | Outra BET altera o saldo; nova aplicação/conexão reidrata o resultado histórico. |
+| WIN/LOSS REJECTED | Rejeição já era testada após outra BET; agora também após reinicialização, preservando failureCode. |
+| REFUND/ROLLBACK PROCESSED | Replay após movimentação e reinício já existia; comparação completa dos registros foi acrescentada. |
+| REFUND/ROLLBACK REJECTED | Casos de ALREADY_REVERSED agora incluem movimentação posterior e reinício; ROLLBACK por insuficiência também reinicia após receber fundos. |
+| WIN/REFUND/ROLLBACK PENDING_REFERENCE | Referência chega e altera saldo; replay em nova aplicação/conexão permanece pendente com o mesmo snapshot de aceitação. |
+
+O helper de integração historical-replay recria um contexto NestJS e o adapter com
+outra instância ORM e confirma um backend PostgreSQL distinto. Antes e depois do
+replay, compara todos os campos e registros da wallet, transações, ledger e outbox,
+incluindo payloads, versões, datas e snapshots decimais como strings. O saldo atual
+deve ser diferente do histórico para evitar uma comparação que passe por coincidência.
+O replay também é executado com acesso ao saldo da Wallet e operações de processamento/
+escrita bloqueados por guardas de teste. Payload alterado e ID externo com chave
+nova devem continuar causando conflito na aplicação reinicializada, sem gravações.
+
+Os testes unitários existentes de BET processada/rejeitada passaram a recusar acesso
+a wallet.balance durante o replay em uma nova instância do caso de uso. Isso verifica
+localmente que a leitura da wallet para lock não fornece o resultado histórico.
+As lacunas encontradas eram de evidência de reinicialização e comparação completa
+do estado persistido; não foi necessário reescrever produção ou criar novos casos.
+A contagem continua em 326 testes PostgreSQL, com os mesmos mínimos por arquivo,
+assertivas obrigatórias e zero skips no runner. As novas assertivas de integração
+ainda precisam de execução no Actions. Não houve HTTP, SQS, worker, migration,
+commit, push ou disparo de workflow. Pendências continuam sem resolução automática;
+reinicialização neste teste significa novo contexto da aplicação e novo cliente SQL,
+não o harness de processos independentes previsto para o Marco 6.
