@@ -46,6 +46,7 @@ class BetUnitOfWork extends WagerProcessingUnitOfWork {
         || (tx.providerId === key.providerId && tx.externalTransactionId === key.externalTransactionId)); },
       insertPending: async tx => { step('pending'); rows.set(tx.id, cloneTx(tx)); },
       findReference: async () => { throw new Error('BET must not load references'); },
+      findProcessedReversals: async () => { throw new Error('Existing operations must not query reversals'); },
       loadTransaction: async id => { step('load'); return rows.get(id); },
       saveWallet: async () => { step('wallet'); },
       completeTransaction: async tx => { step('result'); rows.set(tx.id, cloneTx(tx)); },

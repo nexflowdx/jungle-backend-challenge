@@ -11,6 +11,8 @@ export interface WagerProcessingTransaction {
   loadTransaction(transactionId: string): Promise<WagerTransaction | undefined>;
   /** Read under the wallet lock; never acquires another wallet/transaction lock. */
   findReference(providerId: string, externalTransactionId: string): Promise<WagerTransaction | undefined>;
+  /** Processed reversals of this reference, read under the same wallet lock. */
+  findProcessedReversals(referenceTransactionId: string): Promise<readonly WagerTransaction[]>;
   saveWallet(wallet: Wallet): Promise<void>;
   /** Persist the initial decision: terminal result or durable PENDING_REFERENCE acceptance. */
   completeTransaction(transaction: WagerTransaction): Promise<void>;

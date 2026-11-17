@@ -38,6 +38,7 @@ class ReferenceWork extends WagerProcessingUnitOfWork {
         || (tx.providerId === key.providerId && tx.externalTransactionId === key.externalTransactionId)),
       insertPending: async tx => { step('pending'); rows.set(tx.id, transactionMapper.toDomain(transactionMapper.toRecord(tx))); },
       findReference: async (provider, external) => { step('reference'); return [...rows.values()].find(tx => tx.providerId === provider && tx.externalTransactionId === external); },
+      findProcessedReversals: async () => { throw new Error('Existing operations must not query reversals'); },
       loadTransaction: async id => rows.get(id),
       saveWallet: async () => { step('wallet'); },
       completeTransaction: async tx => { step('result'); rows.set(tx.id, transactionMapper.toDomain(transactionMapper.toRecord(tx))); },
@@ -144,7 +145,7 @@ describe('WIN reference acceptance (5.5, domain orchestration)', () => {
     await expect(processor(work).execute(input())).rejects.toBeInstanceOf(WagerResultUnavailableError);
     expect(work.events).toHaveLength(0);
   });
-  test.each([Kind.Bet, Kind.Loss, Kind.Refund, Kind.Rollback])('%s references remain unsupported before persistence', async kind => {
+  test.each([Kind.Bet, Kind.Loss, Kind.Opening])('%s references remain unsupported before persistence', async kind => {
     const work = new ReferenceWork();
     await expect(processor(work).execute({ ...input(), kind })).rejects.toBeInstanceOf(WagerProcessingNotImplementedError);
     expect(work.calls).toHaveLength(0);

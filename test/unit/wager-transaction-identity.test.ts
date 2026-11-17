@@ -10,6 +10,7 @@ const identity = new WagerTransactionIdentity();
 const unusedFinancial = {
   lockWallet: async () => { throw new Error('Identity classification must not lock wallets'); },
   findReference: async () => { throw new Error('Identity classification must not load references'); },
+  findProcessedReversals: async () => { throw new Error('Identity classification must not load reversals'); },
   loadTransaction: async () => { throw new Error('Identity classification must not load results'); },
   saveWallet: async () => { throw new Error('Identity classification must not change wallets'); },
   completeTransaction: async () => { throw new Error('Identity classification must not complete transactions'); },

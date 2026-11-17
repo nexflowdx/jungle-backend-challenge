@@ -5,7 +5,7 @@ import { WagerTransactionRecord, WalletRecord } from '../../../database/entities
 import { runPostgresTransaction } from '../../../database/postgres-transaction';
 import { WagerProcessingRetryableError, WagerProcessingUnitOfWork, type WagerProcessingTransaction } from '../application/wager-processing-unit-of-work';
 import { WagerIdentityCollisionError } from '../application/wager-transaction-identity';
-import { WagerTransactionStatus } from '../domain/wager-transaction.types';
+import { WagerTransactionKind, WagerTransactionStatus } from '../domain/wager-transaction.types';
 
 export class PostgresWagerProcessingUnitOfWork extends WagerProcessingUnitOfWork {
   constructor(private readonly orm: MikroORM) { super(); }
@@ -47,6 +47,14 @@ export class PostgresWagerProcessingUnitOfWork extends WagerProcessingUnitOfWork
               // No reference row lock: terminal records are immutable; no second wallet is locked.
               const record = await manager.findOne(WagerTransactionRecord, { providerId, externalTransactionId }, { refresh: true });
               return record ? transactionMapper.toDomain(record) : undefined;
+            }),
+            findProcessedReversals: referenceTransactionId => operation(async () => {
+              if (!lockedWalletId) throw new Error('Load reversals after locking the wallet');
+              const records = await manager.find(WagerTransactionRecord, {
+                walletId: lockedWalletId, referenceTransactionId, status: WagerTransactionStatus.Processed,
+                kind: { $in: [WagerTransactionKind.Refund, WagerTransactionKind.Rollback] },
+              }, { refresh: true });
+              return records.map(record => transactionMapper.toDomain(record));
             }),
             saveWallet: wallet => operation(async () => {
               requireWallet(wallet.id);

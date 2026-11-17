@@ -38,6 +38,7 @@ class WinLossWork extends WagerProcessingUnitOfWork {
         || (tx.providerId === key.providerId && tx.externalTransactionId === key.externalTransactionId)),
       insertPending: async tx => { step('pending'); rows.set(tx.id, transactionMapper.toDomain(transactionMapper.toRecord(tx))); },
       findReference: async () => { throw new Error('Unreferenced operations must not load references'); },
+      findProcessedReversals: async () => { throw new Error('Existing operations must not query reversals'); },
       loadTransaction: async id => rows.get(id),
       saveWallet: async () => { step('wallet'); },
       completeTransaction: async tx => { step('result'); rows.set(tx.id, transactionMapper.toDomain(transactionMapper.toRecord(tx))); },

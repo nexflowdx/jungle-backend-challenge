@@ -10,12 +10,12 @@ import { WagerIdentityCollisionError, WagerTransactionIdentity } from './wager-t
 import { WagerProcessingRetryableError, WagerProcessingUnitOfWork } from './wager-processing-unit-of-work';
 
 export interface SupportedWagerCommand extends WagerIdentityRequest {
-  readonly kind: Kind.Bet | Kind.Win | Kind.Loss;
+  readonly kind: Kind.Bet | Kind.Win | Kind.Loss | Kind.Refund | Kind.Rollback;
   readonly correlationId: string;
   readonly causationId?: string;
 }
 export interface BetCommand extends SupportedWagerCommand { readonly kind: Kind.Bet; }
-export type ProcessWagerTransactionCommand = SupportedWagerCommand | { readonly walletId: string; readonly kind: Exclude<Kind, Kind.Bet | Kind.Win | Kind.Loss> };
+export type ProcessWagerTransactionCommand = SupportedWagerCommand | { readonly walletId: string; readonly kind: Exclude<Kind, Kind.Bet | Kind.Win | Kind.Loss | Kind.Refund | Kind.Rollback> };
 
 export interface ProcessWagerTransactionResult {
   readonly transactionId: string;
@@ -53,7 +53,9 @@ export class ProcessWagerTransaction {
   ) {}
 
   async execute(command: ProcessWagerTransactionCommand): Promise<ProcessWagerTransactionResult> {
-    if ((command.kind !== Kind.Bet && command.kind !== Kind.Win && command.kind !== Kind.Loss) || (command.referenceExternalTransactionId !== undefined && command.kind !== Kind.Win)) {
+    if ((command.kind !== Kind.Bet && command.kind !== Kind.Win && command.kind !== Kind.Loss
+      && command.kind !== Kind.Refund && command.kind !== Kind.Rollback)
+      || ((command.kind === Kind.Bet || command.kind === Kind.Loss) && command.referenceExternalTransactionId !== undefined)) {
       throw new WagerProcessingNotImplementedError(command.kind);
     }
     assertIdentifier(command.correlationId);
@@ -81,8 +83,10 @@ export class ProcessWagerTransaction {
         if (outcome.kind === 'identity-replay') return this.result(await scope.loadTransaction(outcome.transactionId), true);
         const reference = candidate.referenceExternalTransactionId === undefined ? undefined
           : await scope.findReference(candidate.providerId, candidate.referenceExternalTransactionId);
+        const priorReversals = candidate.requiresReference() && reference
+          ? await scope.findProcessedReversals(reference.id) : [];
         const at = this.runtime.now();
-        const entry = candidate.process(wallet, { at, ledgerEntryId: this.runtime.newId(), priorReversals: [],
+        const entry = candidate.process(wallet, { at, ledgerEntryId: this.runtime.newId(), priorReversals,
           ...(reference === undefined ? {} : { reference }) });
         if (entry) await scope.saveWallet(wallet);
         await scope.completeTransaction(candidate);
@@ -104,10 +108,11 @@ export class ProcessWagerTransaction {
   }
 
   private result(transaction: WagerTransaction | undefined, replay: boolean): ProcessWagerTransactionResult {
-    if (!transaction || (transaction.kind !== Kind.Bet && transaction.kind !== Kind.Win && transaction.kind !== Kind.Loss)
+    if (!transaction || (transaction.kind !== Kind.Bet && transaction.kind !== Kind.Win && transaction.kind !== Kind.Loss
+      && transaction.kind !== Kind.Refund && transaction.kind !== Kind.Rollback)
       || !transaction.balance) throw new WagerResultUnavailableError();
     if (transaction.status === Status.PendingReference) {
-      if (transaction.kind !== Kind.Win || !transaction.referenceExternalTransactionId || !transaction.acceptedBalance
+      if ((transaction.kind !== Kind.Win && !transaction.requiresReference()) || !transaction.referenceExternalTransactionId || !transaction.acceptedBalance
         || transaction.completedAt || transaction.failureCode) throw new WagerResultUnavailableError();
     } else if (!transaction.completedAt || (transaction.status !== Status.Processed && transaction.status !== Status.Rejected)
       || (transaction.status === Status.Rejected && !transaction.failureCode)) throw new WagerResultUnavailableError();

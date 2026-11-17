@@ -16,6 +16,7 @@ async function main(): Promise<void> {
       './.test-dist/test/integration/bet-processing.test.js',
       './.test-dist/test/integration/win-loss-processing.test.js',
       './.test-dist/test/integration/reference-processing.test.js',
+      './.test-dist/test/integration/reversal-processing.test.js',
       '--timeout=10000', '--reporter=junit', `--reporter-outfile=${report}`], {
       env: { ...process.env, PERSISTENCE_INTEGRATION: '1' }, stdout: 'inherit', stderr: 'inherit',
     });
