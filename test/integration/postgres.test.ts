@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { randomUUID } from 'node:crypto';
+import { wrap } from '@mikro-orm/core';
 import type { EntityManager, MikroORM } from '@mikro-orm/postgresql';
 import { createPersistence, persistenceMigrations } from '../../src/database/orm';
 import { WalletRecord, WagerTransactionRecord, LedgerEntryRecord, InboxMessageRecord, OutboxMessageRecord } from '../../src/database/entities';
@@ -37,6 +38,14 @@ describe.skipIf(!enabled)('PostgreSQL disposable integration (3.1–3.5)', () =>
     let statementsCompleted = false;
     await invalid(async em => { await work(em); statementsCompleted = true; });
     expect(statementsCompleted).toBe(true);
+  }
+  async function assertBalanceMatchesLedger(walletId: string): Promise<void> {
+    const [row] = await sql(`SELECT w.balance, COALESCE(SUM(CASE e.direction
+      WHEN 'CREDIT' THEN e.amount ELSE -e.amount END), 0) AS reconstructed
+      FROM wallets w LEFT JOIN wallet_ledger_entries e ON e.wallet_id=w.id
+      WHERE w.id=? GROUP BY w.id`, [walletId]);
+    expect(row).toBeDefined();
+    expect(money(row!.balance as string).equals(money(row!.reconstructed as string))).toBe(true);
   }
   function props(target: Wallet, overrides: Partial<CreateWagerTransactionProps> = {}): CreateWagerTransactionProps {
     const id = randomUUID();
@@ -130,6 +139,89 @@ describe.skipIf(!enabled)('PostgreSQL disposable integration (3.1–3.5)', () =>
       expect(row.numeric_precision).toBeNull();
       expect(row.numeric_scale).toBeNull();
     }
+  });
+  test.each([Status.Pending, Status.PendingReference])('ORM persists and hydrates nullable monetary snapshots for %s', async status => {
+    const target = await open();
+    const tx = WagerTransaction.create(props(target, { kind: Kind.Refund, referenceExternalTransactionId: 'missing' }));
+    if (status === Status.PendingReference) tx.markPendingReference(target.balance);
+    await atomic(async em => {
+      em.persist(transactionMapper.toRecord(tx));
+      await em.flush();
+    });
+    const em = fresh();
+    const record = await em.findOneOrFail(WagerTransactionRecord, { id: tx.id, walletId: target.id });
+    const accepted = status === Status.PendingReference ? '100.00' : null;
+    expect(record.status).toBe(status);
+    expect(record.walletId).toBe(target.id);
+    expect(record.acceptedBalance).toBe(accepted);
+    expect(record.balance).toBeNull();
+    const snapshot = wrap(record, true).__originalEntityData!;
+    expect(snapshot.acceptedBalance).toBe(accepted);
+    expect(snapshot.balance).toBeNull();
+    expect(transactionMapper.toDomain(record).balance?.toString()).toBe(accepted ?? undefined);
+    em.getUnitOfWork().computeChangeSets();
+    expect(em.getUnitOfWork().getChangeSets()).toHaveLength(0);
+    await em.flush();
+    expect(await fresh().count(LedgerEntryRecord, { transactionId: tx.id })).toBe(0);
+    await assertBalanceMatchesLedger(target.id);
+  });
+  test('ORM orders scalar foreign keys when persisting an opening graph and keeps loaded snapshots unchanged', async () => {
+    const txId = randomUUID();
+    const target = Wallet.open({ id: randomUUID(), playerId: randomUUID(), initialBalance: money('9007199254740993.01'), at,
+      opening: { id: randomUUID(), transactionId: txId } });
+    const tx = WagerTransaction.createOpening({ ...props(target, { id: txId }), money: target.balance });
+    tx.markProcessed(undefined, target.balance, at);
+    const entry = target.pendingLedgerEntries[0]!;
+    await atomic(async em => {
+      // Deliberately reversed: Unit of Work must insert wallet, transaction, then ledger.
+      em.persist([ledgerMapper.toRecord(entry), transactionMapper.toRecord(tx), walletMapper.toRecord(target)]);
+      await em.flush();
+    });
+    const em = fresh();
+    const storedWallet = await em.findOneOrFail(WalletRecord, target.id);
+    const storedTx = await em.findOneOrFail(WagerTransactionRecord, { id: tx.id, walletId: target.id });
+    const storedEntry = await em.findOneOrFail(LedgerEntryRecord, { walletId: target.id, transactionId: tx.id });
+    expect(storedWallet.version).toBe(1);
+    expect(storedWallet.balance).toBe('9007199254740993.01');
+    expect(storedTx.acceptedBalance).toBeNull();
+    expect(storedTx.balance).toBe(storedWallet.balance);
+    expect(storedEntry.id).toBe(entry.id);
+    expect(storedEntry.walletId).toBe(target.id);
+    expect(storedEntry.transactionId).toBe(tx.id);
+    expect(wrap(storedEntry, true).__originalEntityData).toMatchObject({ walletId: target.id, transactionId: tx.id });
+    em.getUnitOfWork().computeChangeSets();
+    expect(em.getUnitOfWork().getChangeSets()).toHaveLength(0);
+    await em.flush(); // Spurious UPDATEs would fail on the immutable transaction/ledger.
+    expect(await fresh().count(LedgerEntryRecord, { walletId: target.id })).toBe(1);
+    await assertBalanceMatchesLedger(target.id);
+  });
+  test('ORM updates pending null snapshots through acceptance and rejection without a financial effect', async () => {
+    const target = await open();
+    const tx = WagerTransaction.create(props(target, { kind: Kind.Refund, referenceExternalTransactionId: 'missing' }));
+    await atomic(async em => { em.persist(transactionMapper.toRecord(tx)); await em.flush(); });
+    await atomic(async em => {
+      const record = await em.findOneOrFail(WagerTransactionRecord, { id: tx.id, walletId: target.id });
+      const restored = transactionMapper.toDomain(record);
+      restored.markPendingReference(target.balance);
+      em.assign(record, transactionMapper.toRecord(restored));
+      await em.flush();
+      expect(wrap(record, true).__originalEntityData).toMatchObject({ acceptedBalance: '100.00', balance: null });
+    });
+    await atomic(async em => {
+      const record = await em.findOneOrFail(WagerTransactionRecord, tx.id);
+      const restored = transactionMapper.toDomain(record);
+      restored.reject(FailureCode.ReferenceNotFound, target.balance, at);
+      em.assign(record, transactionMapper.toRecord(restored));
+      await em.flush();
+    });
+    const record = await fresh().findOneOrFail(WagerTransactionRecord, tx.id);
+    expect(record.status).toBe(Status.Rejected);
+    expect(record.acceptedBalance).toBe('100.00');
+    expect(record.balance).toBe('100.00');
+    expect(record.failureCode).toBe(FailureCode.ReferenceNotFound);
+    expect(await fresh().count(LedgerEntryRecord, { transactionId: tx.id })).toBe(0);
+    expect((await fresh().findOneOrFail(WalletRecord, target.id)).version).toBe(1);
+    await assertBalanceMatchesLedger(target.id);
   });
   test.each(['-0.01', '1.001', '1.230', 'NaN', 'Infinity', '-Infinity', '92233720368547758.08'])('rejects invalid SQL money %s in every monetary column', async amount => {
     const target = await open();

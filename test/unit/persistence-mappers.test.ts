@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'bun:test';
+import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { MikroORM } from '@mikro-orm/postgresql';
 import { ledgerMapper, transactionMapper, walletMapper, outboxRecord } from '../../src/database/domain-mappers';
 import { databaseOptions } from '../../src/database/orm';
@@ -6,7 +6,7 @@ import { MoneyAmountType } from '../../src/database/money-mapping';
 import { LedgerEntryRecord, WagerTransactionRecord } from '../../src/database/entities';
 import { runtimePrivilegesSql } from '../../src/database/runtime-privileges';
 import { WalletBalanceChanged } from '../../src/modules/wallets/domain/wallet-balance-changed';
-import { FailureCode, WagerTransactionKind as Kind } from '../../src/modules/wagering/domain/wager-transaction.types';
+import { FailureCode, WagerTransactionKind as Kind, WagerTransactionStatus as Status } from '../../src/modules/wagering/domain/wager-transaction.types';
 import { later, money, process, transaction, wallet } from './financial-fixtures';
 
 describe('persistence adapters (3.2–3.5)', () => {
@@ -74,11 +74,16 @@ describe('persistence adapters (3.2–3.5)', () => {
     expect(record.publishedAt).toBeNull();
     expect(record.leaseToken).toBeNull();
   });
-  test('discovers actual ORM metadata without connecting or generating schema', async () => {
-    const orm = await MikroORM.init({ ...databaseOptions({
-      host: 'unused', port: 5432, dbName: 'unused', user: 'unused', password: 'unused',
-    }), connect: false });
-    try {
+  describe('ORM metadata, SQL and snapshots without a database connection', () => {
+    let orm: MikroORM;
+    beforeAll(async () => {
+      orm = await MikroORM.init({ ...databaseOptions({
+        host: 'unused', port: 5432, dbName: 'unused', user: 'unused', password: 'unused',
+      }), connect: false });
+    });
+    afterAll(async () => { if (orm) await orm.close(true); });
+
+    test('discovers exact numeric types and scalar foreign keys with migration column names', () => {
       const metadata = Object.values(orm.getMetadata().getAll());
       expect(metadata).toHaveLength(5);
       const monetary = metadata.flatMap(entity => entity.props).filter(prop => prop.customType instanceof MoneyAmountType);
@@ -86,13 +91,55 @@ describe('persistence adapters (3.2–3.5)', () => {
       for (const property of monetary) expect(property.columnTypes).toEqual(['numeric']);
       // Scalar foreign keys still describe dependencies to the Unit of Work.
       const transactionWallet = orm.getMetadata().get(WagerTransactionRecord).properties.walletId;
+      const ledgerWallet = orm.getMetadata().get(LedgerEntryRecord).properties.walletId;
       const ledgerTransaction = orm.getMetadata().get(LedgerEntryRecord).properties.transactionId;
-      expect(transactionWallet.mapToPk).toBe(true);
-      expect(transactionWallet.targetMeta?.className).toBe('WalletRecord');
-      expect(ledgerTransaction.mapToPk).toBe(true);
-      expect(ledgerTransaction.targetMeta?.className).toBe('WagerTransactionRecord');
+      for (const [property, column, target] of [
+        [transactionWallet, 'wallet_id', 'WalletRecord'],
+        [ledgerWallet, 'wallet_id', 'WalletRecord'],
+        [ledgerTransaction, 'transaction_id', 'WagerTransactionRecord'],
+      ] as const) {
+        expect(property.mapToPk).toBe(true);
+        expect(property.targetMeta?.className).toBe(target);
+        expect(property.fieldNames).toEqual([column]);
+        expect(property.joinColumns).toEqual([column]);
+      }
       expect(orm.em.fork()).not.toBe(orm.em.fork());
-    } finally { await orm.close(true); }
+    });
+
+    test.each([WagerTransactionRecord, LedgerEntryRecord])('generates SELECT, INSERT and UPDATE using migration foreign keys for %s', entity => {
+      const em = orm.em.fork();
+      const relations = entity === LedgerEntryRecord
+        ? { walletId: 'wallet', transactionId: 'transaction' } : { walletId: 'wallet' };
+      const columns = entity === LedgerEntryRecord ? ['wallet_id', 'transaction_id'] : ['wallet_id'];
+      const record = entity === LedgerEntryRecord
+        ? ledgerMapper.toRecord(wallet().pendingLedgerEntries[0]!) : transactionMapper.toRecord(transaction());
+      const queries = [
+        em.createQueryBuilder(entity.name).select('*').where(relations),
+        em.createQueryBuilder(entity.name).insert({ ...record, ...relations }),
+        em.createQueryBuilder(entity.name).update(relations).where({ id: record.id }),
+      ];
+      for (const query of queries) {
+        const sql = query.getQuery();
+        for (const column of columns) expect(sql).toContain(`"${column}"`);
+        expect(sql).not.toMatch(/(?:wallet|transaction)_id_id/);
+        expect(query.getParams()).toContain('wallet');
+        if (entity === LedgerEntryRecord) expect(query.getParams()).toContain('transaction');
+      }
+    });
+
+    test.each([Status.Pending, Status.PendingReference, Status.Processed, Status.Rejected])('prepares %s ORM snapshots without inventing nullable amounts', status => {
+      const tx = transaction({ kind: Kind.Win, referenceExternalTransactionId: 'reference' });
+      if (status === Status.PendingReference) tx.markPendingReference(money('100.00'));
+      if (status === Status.Processed) tx.markProcessed('reference-id', money('110.00'), later);
+      if (status === Status.Rejected) tx.reject(FailureCode.ReferenceNotFound, money('100.00'), later);
+      const record = transactionMapper.toRecord(tx);
+      const snapshot = orm.em.fork().getComparator().prepareEntity(record);
+      expect(snapshot.walletId).toBe(record.walletId);
+      expect(snapshot.amount).toBe('10.00');
+      expect(snapshot.acceptedBalance).toBe(status === Status.PendingReference ? '100.00' : null);
+      expect(snapshot.balance).toBe(status === Status.Processed ? '110.00' : status === Status.Rejected ? '100.00' : null);
+      expect(snapshot).not.toHaveProperty('walletIdId');
+    });
   });
   test('rejects unsafe privilege identifiers', () => {
     expect(() => runtimePrivilegesSql('x; DROP TABLE wallets')).toThrow();

@@ -100,7 +100,7 @@ export const transactionSchema = new EntitySchema({
   properties: {
     id: { ...text, primary: true }, providerId: text, externalTransactionId: text,
     idempotencyKey: text, payloadHash: text,
-    walletId: { kind: 'm:1', entity: () => WalletRecord, mapToPk: true }, playerId: text,
+    walletId: { kind: 'm:1', entity: () => WalletRecord, mapToPk: true, fieldName: 'wallet_id' }, playerId: text,
     roundId: text, gameId: text, kind: text, amount, currency: text,
     referenceExternalTransactionId: nullableText, referenceTransactionId: nullableText,
     status: text, failureCode: nullableText, acceptedBalance: nullableAmount,
@@ -114,8 +114,8 @@ export const ledgerSchema = new EntitySchema({
   class: LedgerEntryRecord, tableName: 'wallet_ledger_entries',
   properties: {
     id: { ...text, primary: true },
-    walletId: { kind: 'm:1', entity: () => WalletRecord, mapToPk: true },
-    transactionId: { kind: 'm:1', entity: () => WagerTransactionRecord, mapToPk: true }, direction: text,
+    walletId: { kind: 'm:1', entity: () => WalletRecord, mapToPk: true, fieldName: 'wallet_id' },
+    transactionId: { kind: 'm:1', entity: () => WagerTransactionRecord, mapToPk: true, fieldName: 'transaction_id' }, direction: text,
     amount, currency: text, balanceBefore: amount, balanceAfter: amount,
     walletVersion: integer, createdAt: date,
   },

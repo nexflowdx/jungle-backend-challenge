@@ -2,15 +2,23 @@ import { Type } from '@mikro-orm/core';
 import { Money } from '../shared/domain/money';
 
 // Amount and currency occupy separate columns. No currency is assumed by the ORM type.
-export class MoneyAmountType extends Type<string, string> {
-  override convertToDatabaseValue(value: string): string {
+export class MoneyAmountType extends Type<string | null, string | null> {
+  override convertToDatabaseValue(value: string): string;
+  override convertToDatabaseValue(value: null): null;
+  override convertToDatabaseValue(value: string | null): string | null;
+  override convertToDatabaseValue(value: string | null): string | null {
+    if (value === null) return null;
     if (typeof value !== 'string' || !/^[0-9]+\.[0-9]{2}$/.test(value)) {
       throw new TypeError('Persisted money requires an exact decimal string with two places');
     }
     return value;
   }
 
-  override convertToJSValue(value: string): string {
+  override convertToJSValue(value: string): string;
+  override convertToJSValue(value: null): null;
+  override convertToJSValue(value: string | null): string | null;
+  override convertToJSValue(value: string | null): string | null {
+    if (value === null) return null;
     if (typeof value !== 'string' || !/^[0-9]+(?:\.[0-9]{1,2})?$/.test(value)) {
       throw new TypeError('PostgreSQL NUMERIC must return a non-negative decimal string');
     }

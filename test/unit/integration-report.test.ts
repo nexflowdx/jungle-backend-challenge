@@ -9,7 +9,7 @@ test('integration report accepts a complete run with assertions and no skips', (
   expect(() => assertPostgresReport(report())).not.toThrow();
 });
 test.each([
-  '', '<testsuites/>', report('', 0), report('', minimumPostgresTests - 1),
+  '', '<testsuites/>', report('', 0), report('', 51), report('', 52), report('', minimumPostgresTests - 1),
   report().replace('skipped="0"', 'skipped="1"'),
   report().replace('failures="0"', 'failures="1"'),
   report().replace('assertions="100"', 'assertions="0"'),

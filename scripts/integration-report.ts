@@ -1,6 +1,6 @@
-// Bun reports a skipped beforeAll as an extra unnamed test locally. With the
-// explicit PostgreSQL connectivity test, this suite has at least 52 real tests.
-export const minimumPostgresTests = 52;
+// Skipped hooks appear as extra unnamed cases locally; they are not real tests.
+// Expanding test.each yields 55 PostgreSQL cases, including the ORM regressions.
+export const minimumPostgresTests = 55;
 
 export function assertPostgresReport(xml: string): void {
   const root = xml.match(/<testsuites\b([^>]*)>/)?.[1];

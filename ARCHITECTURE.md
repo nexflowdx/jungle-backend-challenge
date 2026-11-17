@@ -106,6 +106,14 @@ pelas factories existentes. Registros ORM carregam somente estado. O resultado
 histórico tem moeda própria para preservar rejeições por moeda incompatível.
 `version` é explícita, sem incremento automático do ORM.
 
+`MoneyAmountType` preserva `null` nas duas direções para snapshots monetários
+opcionais; valores presentes continuam sujeitos à validação decimal estrita.
+Os relacionamentos escalares declaram `wallet_id` e `transaction_id` explicitamente
+para corresponder às migrations, preservando `mapToPk` e as dependências da Unit
+of Work. Testes locais verificam metadados, SQL gerado e snapshots sem conectar
+ao banco; regressões de persistência, hidratação e atualização no PostgreSQL
+continuam pendentes de execução no ambiente isolado.
+
 Quatro migrations reversíveis criam Wallet/transações, ledger, correspondência
 financeira e Inbox/Outbox. CHECKs impedem escala excedente, valores especiais,
 negativos, excesso de faixa e aritmética inválida. FKs compostas preservam
@@ -141,6 +149,6 @@ outros hosts, bancos e ambientes. A suíte cobre migrations up/down/up, SQL inv�
 precisão, concorrência de escritores, privilégios e rollback financeiro com
 Inbox/Outbox. A execução em PostgreSQL real está pendente de autorização no Actions;
 testes locais pulam explicitamente essa suíte. Não se executa Docker na VPS.
-O runner de integração exige relatório JUnit com pelo menos 52 testes reais,
+O runner de integração exige relatório JUnit com pelo menos 55 testes reais,
 assertivas e zero skips/falhas; relatório ausente ou indisponibilidade do banco
-falha o job. A contagem local de skips inclui também o hook de inicialização.
+falha o job. A contagem local de skips inclui também hooks, excluídos dos 55 casos.
