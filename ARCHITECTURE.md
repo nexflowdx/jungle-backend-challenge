@@ -1,4 +1,4 @@
-# Arquitetura até o incremento 5.1 (integração nova pendente)
+# Arquitetura até o incremento 5.2 (integração nova pendente)
 
 Monólito modular NestJS: `WalletsModule`, `WageringModule`, `MessagingModule` e
 `OperationsModule`. O caso de uso de abertura está implementado em Wallets;
@@ -115,7 +115,8 @@ para corresponder às migrations, preservando `mapToPk` e as dependências da Un
 of Work. Testes locais verificam metadados, SQL gerado e snapshots sem conectar
 ao banco. O desenvolvedor confirmou a aprovação das regressões do Marco 3 no
 Actions com PostgreSQL real. Os Marcos 3 e 4 foram validados nesse ambiente,
-conforme confirmação do desenvolvedor; a integração nova do incremento 5.1 está pendente.
+conforme confirmação do desenvolvedor, assim como os 96 testes até 5.1.
+A integração nova do incremento 5.2 está pendente.
 
 Quatro migrations reversíveis criam Wallet/transações, ledger, correspondência
 financeira e Inbox/Outbox. CHECKs impedem escala excedente, valores especiais,
@@ -150,9 +151,10 @@ compatibilidade com `exactOptionalPropertyTypes`; não altera o runtime. `strict
 17.12 aprovado, em tmpfs/rede interna sem portas publicadas. Seu runner recusa
 outros hosts, bancos e ambientes. A suíte cobre migrations up/down/up, SQL inválido,
 precisão, concorrência de escritores, privilégios e rollback financeiro com
-Inbox/Outbox, abertura atômica e infraestrutura transacional de 5.1. Testes locais pulam as três suítes
+Inbox/Outbox, abertura atômica, infraestrutura transacional e identidade. Testes locais pulam as quatro suítes
 PostgreSQL. Não se executa Docker na VPS. O runner exige relatório JUnit com pelo
-menos 96 casos reais: 55 de persistência, 32 de abertura e 9 de infraestrutura de 5.1. Cada arquivo deve atingir
+menos 128 casos reais: 55 de persistência, 32 de abertura, 9 de infraestrutura de 5.1
+e 32 de identidade. Cada arquivo deve atingir
 seu mínimo com assertivas; hooks não contam. Skips, falhas, relatório ausente ou
 indisponibilidade do banco falham o job. A contagem local de skips inclui hooks.
 
@@ -217,8 +219,74 @@ descartáveis de wallet. Comprovam escrita efetiva, invisibilidade pré-commit,
 rollback, retry da fixture, propagação de erros SQL/commit e isolamento entre
 callbacks concorrentes. Essas verificações não representam processamento de apostas.
 
-Os nove casos novos serão executados pelo mesmo workflow exclusivamente manual,
-com os 87 casos anteriores e exigência de assertivas por arquivo, sem skips.
-Sua execução com PostgreSQL real permanece pendente de autorização. Idempotência,
-hash canônico, persistência de apostas, locks financeiros, HTTP e SQS continuam
-nos incrementos seguintes. Nenhum estado financeiro ou política de reversão mudou.
+Os 96 casos até 5.1 foram validados no Actions com PostgreSQL real, conforme
+confirmação do desenvolvedor. Continuam exigidos pelo mesmo workflow manual,
+com assertivas por arquivo e zero skips. Locks financeiros, processamento,
+HTTP e SQS permanecem nos próximos incrementos.
+
+## Identidade persistente — incremento 5.2
+
+`WagerRequestFingerprint` projeta somente providerId, externalTransactionId,
+playerId, walletId, roundId, gameId, kind, money e referenceExternalTransactionId
+quando presente. O nome persistido permanece `payloadHash`/`payload_hash`.
+OPENING continua usando sua convenção interna anterior, sem alteração.
+
+A representação canônica v1 usa chaves ordenadas recursivamente pela ordenação
+lexicográfica de `Array.sort()`; valores string são escapados por JSON.stringify,
+sem espaços entre elementos. SHA-256 recebe esse texto em UTF-8 e retorna 64
+caracteres hexadecimais minúsculos. O contrato projetado tem somente strings e
+objetos aninhados, sem arrays nem valores monetários numéricos. Por exemplo:
+
+```json
+{"externalTransactionId":"external","gameId":"game","kind":"BET","money":{"amount":"1.00","currency":"BRL"},"playerId":"player","providerId":"provider","roundId":"round","walletId":"wallet"}
+```
+
+Esse texto produz `d113aa12eb7035f8125c874cbbd3afc09448b8c06b460dc10ca0ff6f60f80c2d`.
+Money é validado pela factory existente: exige duas casas na entrada e normaliza
+zeros à esquerda (`001.00` e `1.00` têm o mesmo hash), sem arredondamento ou number.
+A moeda compõe o hash. IDs mantêm caixa, espaços e Unicode, sem normalização de
+valores. Referência ausente ou undefined é omitida; null e string vazia são
+inválidos. IdempotencyKey, hash fornecido pelo chamador, IDs internos, horários,
+headers, correlação, mensagem e outros metadados não entram na projeção.
+Alterações futuras nessa representação precisam preservar a comparação com hashes
+já persistidos; não há recálculo automático de hashes históricos.
+
+`WagerTransactionIdentity` cria candidatas pela factory de domínio, resolve a
+identidade dentro da sessão fornecida pelo chamador e retorna apenas os campos
+técnicos kind (`identity-created`/`identity-replay`), transactionId e payloadHash.
+Mesma chave, provider/ID externo e hash produzem repetição de identidade; chave
+com conteúdo divergente gera PAYLOAD_MISMATCH. Provider/ID externo sob outra chave
+gera EXTERNAL_ID_REUSED mesmo com hash igual. Identidades apontando para dois
+registros diferentes geram CROSSED_IDENTITIES. Consultas prévias apenas antecipam
+a classificação; as constraints UNIQUE continuam sendo a garantia definitiva.
+
+A porta agora fornece `WagerProcessingTransaction`, com findIdentityCandidates e
+insertPending. As duas operações capturam o mesmo manager do callback transacional
+do adapter, sem expor ORM à aplicação. A sessão fecha ao encerrar o callback;
+não pode ser usada após commit/rollback ou depois de falha de persistência.
+Engolir uma falha de operação no callback não permite confirmar escritas anteriores.
+
+Somente UniqueConstraintViolationException com SQLSTATE 23505 e uma das duas
+constraints de identidade vira WagerIdentityCollisionError, por fora da fronteira
+transacional e após rollback. `recoverAfterRollback` aceita apenas esse erro,
+abre nova transação de leitura e compara o vencedor confirmado. Não reinsere.
+PK, FK, outros erros SQL, erros genéricos, deadlocks e timeouts propagam sem
+classificação de conflito, resultado fictício, status FAILED ou aceite pendente.
+Se não encontrar vencedor, preserva o erro em vez de inventar uma decisão.
+
+Não existe caso de uso de reserva com commit próprio. ProcessWagerTransaction
+continua recusando operações indisponíveis antes de acessar o banco, e não chama
+o resolvedor de identidade. PENDING confirmado neste incremento existe apenas nas
+fixtures controladas de integração; não constitui aceite pelo fluxo público.
+Em 5.3, o chamador poderá bloquear a wallet antes de resolver a identidade e
+persistir o efeito financeiro na mesma transação. Replay de saldo histórico,
+respostas terminais e evolução de PENDING_REFERENCE ainda não estão implementados.
+
+Os 32 casos PostgreSQL novos usam conexões reais, barreiras e observação de espera
+por lock no servidor para disputas de identidade. Cobrem leitura da própria
+inserção, invisibilidade externa, rollback, recuperação em nova sessão, reinício
+do cliente, identidades cruzadas, wallets distintas e lock_timeout local ao teste.
+Nenhum débito, crédito, ledger ou evento financeiro é produzido. Sua execução
+real permanece pendente de autorização no workflow manual; os 96 casos anteriores
+foram preservados. OpenWallet, domínio financeiro, migrations e configurações de
+infraestrutura permanecem intactos.

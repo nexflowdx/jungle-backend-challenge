@@ -2,14 +2,14 @@ import 'reflect-metadata';
 import { describe, expect, test } from 'bun:test';
 import { NestFactory } from '@nestjs/core';
 import { ProcessWagerTransaction, WagerProcessingNotImplementedError } from '../../src/modules/wagering/application/process-wager-transaction';
-import { WagerProcessingUnitOfWork } from '../../src/modules/wagering/application/wager-processing-unit-of-work';
+import { WagerProcessingUnitOfWork, type WagerProcessingTransaction } from '../../src/modules/wagering/application/wager-processing-unit-of-work';
 import { WagerTransactionKind as Kind } from '../../src/modules/wagering/domain/wager-transaction.types';
 import { WageringModule } from '../../src/modules/wagering/wagering.module';
 
 class UnreachableUnitOfWork extends WagerProcessingUnitOfWork {
   calls = 0;
 
-  override async transaction<T>(_work: () => Promise<T>): Promise<T> {
+  override async transaction<T>(_work: (scope: WagerProcessingTransaction) => Promise<T>): Promise<T> {
     this.calls++;
     throw new Error('Unavailable processing must not open a transaction');
   }

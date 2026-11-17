@@ -1,4 +1,4 @@
-name: Milestones 3, 4 and 5.1 PostgreSQL Integration
+name: Milestones 3, 4, 5.1 and 5.2 PostgreSQL Integration
 
 on:
   workflow_dispatch:
@@ -54,7 +54,7 @@ jobs:
           set -euo pipefail
           timeout --signal=KILL 180s docker compose up --detach --wait --wait-timeout 60 postgres
 
-      - name: Test persistence, atomic opening and wager transaction infrastructure rollback
+      - name: Test persistence, atomic opening, wager transaction infrastructure and identity concurrency
         shell: bash
         run: |
           set -euo pipefail
