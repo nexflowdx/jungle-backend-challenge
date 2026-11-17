@@ -1,0 +1,32 @@
+{
+  "name": "jungle-wagering-processor",
+  "version": "0.1.0",
+  "private": true,
+  "type": "commonjs",
+  "packageManager": "bun@1.4.4",
+  "engines": {
+    "bun": "1.4.4"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "dev": "bun scripts/dev.ts",
+    "start": "bun dist/main.js",
+    "bootstrap": "bun dist/main.js --bootstrap-only",
+    "test": "tsc -p tsconfig.test.json && bun test ./.test-dist/test",
+    "test:unit": "tsc -p tsconfig.test.json && bun test ./.test-dist/test/unit",
+    "check": "bun run --bun typecheck && bun run --bun build && bun run bootstrap && bun run --bun test"
+  },
+  "dependencies": {
+    "@nestjs/common": "11.2.10",
+    "@nestjs/core": "11.2.10",
+    "@nestjs/platform-express": "11.2.10",
+    "reflect-metadata": "0.2.2",
+    "rxjs": "7.8.2"
+  },
+  "devDependencies": {
+    "@types/bun": "1.4.4",
+    "@types/node": "26.2.0",
+    "typescript": "5.9.3"
+  }
+}

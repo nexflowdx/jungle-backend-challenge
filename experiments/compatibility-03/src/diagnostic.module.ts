@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { Injectable, Module, type OnApplicationShutdown } from '@nestjs/common';
 import { Entity, PrimaryKey, Property, Type } from '@mikro-orm/core';
 import { MikroORM } from '@mikro-orm/postgresql';
+import { SqsProbe } from './sqs.probe';
 
 // Diagnostic mapping only: no Money domain object or financial rules.
 export class DiagnosticAmountType extends Type<string, string> {
@@ -178,6 +179,6 @@ export class DatabaseProbe implements OnApplicationShutdown {
 
 @Module({
   imports: [BootstrapModule],
-  providers: [{ provide: MikroORM, useFactory: createDiagnosticOrm }, DatabaseProbe],
+  providers: [{ provide: MikroORM, useFactory: createDiagnosticOrm }, DatabaseProbe, SqsProbe],
 })
 export class DiagnosticModule {}

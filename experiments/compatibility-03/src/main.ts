@@ -3,6 +3,7 @@ import assert, { AssertionError } from 'node:assert/strict';
 import { NestFactory } from '@nestjs/core';
 import type { INestApplicationContext } from '@nestjs/common';
 import { BootstrapModule, BootstrapProbe, DatabaseProbe, DiagnosticModule, verifyOrmMetadata } from './diagnostic.module';
+import { SqsProbe } from './sqs.probe';
 
 async function main(): Promise<void> {
   assert.equal(process.versions['bun'], '1.4.4', 'The experiment must execute with Bun 1.4.4');
@@ -24,6 +25,7 @@ async function main(): Promise<void> {
       await verifyOrmMetadata();
     } else {
       await application.get(DatabaseProbe).verify();
+      await application.get(SqsProbe).verify();
     }
   } finally {
     try {

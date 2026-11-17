@@ -14,6 +14,7 @@
     "diagnose": "bun dist/main.js"
   },
   "dependencies": {
+    "@aws-sdk/client-sqs": "3.1170.0",
     "@mikro-orm/core": "6.6.18",
     "@mikro-orm/postgresql": "6.6.18",
     "@nestjs/common": "11.2.10",

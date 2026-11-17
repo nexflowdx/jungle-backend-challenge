@@ -25,6 +25,35 @@ services:
       start_period: 5s
     networks: [diagnostic]
 
+  ministack:
+    image: ministackorg/ministack:1.5.39@sha256:856f4e1fe9c740798baf7d19a3c9eda90dfca3e7a90bd0a30e23044fb17d47a9
+    platform: linux/amd64
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    environment:
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      AWS_EC2_METADATA_DISABLED: 'true'
+      MINISTACK_ACCOUNT_ID: '000000000000'
+      MINISTACK_REGION: us-east-1
+      MINISTACK_HOST: ministack
+      SERVICES: sqs
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import json, urllib.request;
+          opener = urllib.request.build_opener(urllib.request.ProxyHandler({}));
+          health = json.load(opener.open('http://127.0.0.1:4566/_ministack/health', timeout=2));
+          exit(0 if health.get('version') == '1.5.39' and health.get('services', {}).get('sqs') == 'available' else 1)
+      interval: 2s
+      timeout: 3s
+      retries: 25
+      start_period: 5s
+    networks: [diagnostic]
+
   diagnostic:
     build:
       context: .
@@ -38,8 +67,12 @@ services:
       PGDATABASE: compatibility_diagnostic
       PGUSER: diagnostic
       PGPASSWORD: ${DIAGNOSTIC_DB_PASSWORD:?temporary diagnostic password required}
+      SQS_ENDPOINT: http://ministack:4566
+      AWS_EC2_METADATA_DISABLED: 'true'
     depends_on:
       postgres:
+        condition: service_healthy
+      ministack:
         condition: service_healthy
     networks: [diagnostic]
 
