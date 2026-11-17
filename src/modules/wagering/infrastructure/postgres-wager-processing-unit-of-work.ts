@@ -41,6 +41,13 @@ export class PostgresWagerProcessingUnitOfWork extends WagerProcessingUnitOfWork
                 { lockMode: LockMode.PESSIMISTIC_WRITE, refresh: true });
               return record ? transactionMapper.toDomain(record) : undefined;
             }),
+            findReference: (providerId, externalTransactionId) => operation(async () => {
+              if (!lockedWalletId) throw new Error('Load references after locking the wallet');
+              // Do not filter by wallet: the domain must reject a cross-wallet reference.
+              // No reference row lock: terminal records are immutable; no second wallet is locked.
+              const record = await manager.findOne(WagerTransactionRecord, { providerId, externalTransactionId }, { refresh: true });
+              return record ? transactionMapper.toDomain(record) : undefined;
+            }),
             saveWallet: wallet => operation(async () => {
               requireWallet(wallet.id);
               const changed = await manager.nativeUpdate(WalletRecord, { id: wallet.id, version: lockedVersion! }, {
@@ -51,8 +58,9 @@ export class PostgresWagerProcessingUnitOfWork extends WagerProcessingUnitOfWork
             }),
             completeTransaction: transaction => operation(async () => {
               requireWallet(transaction.walletId);
-              if (transaction.status !== WagerTransactionStatus.Processed && transaction.status !== WagerTransactionStatus.Rejected) {
-                throw new Error('Completion requires a processed or rejected result');
+              if (transaction.status !== WagerTransactionStatus.Processed && transaction.status !== WagerTransactionStatus.Rejected
+                && transaction.status !== WagerTransactionStatus.PendingReference) {
+                throw new Error('Decision requires a processed, rejected or pending-reference result');
               }
               const record = await manager.findOneOrFail(WagerTransactionRecord, { id: transaction.id, walletId: lockedWalletId! });
               if (record.status !== WagerTransactionStatus.Pending) throw new Error('Only a pending transaction can complete');

@@ -194,9 +194,9 @@ describe.skipIf(!enabled)('Atomic WIN and LOSS PostgreSQL integration (5.4)', ()
     await unchanged(target);
     expect((await processor().execute(input)).idempotentReplay).toBe(false); await consistent(target, '100.00');
   });
-  test.each([Kind.Win, Kind.Loss])('%s reference stays explicitly unavailable without a PENDING_REFERENCE result', async kind => {
+  test.each([Kind.Bet, Kind.Loss])('%s reference stays explicitly unavailable without a PENDING_REFERENCE result', async kind => {
     const target = await open();
-    await expect(processor().execute(command(target, kind, { referenceExternalTransactionId: 'reference' }))).rejects.toBeInstanceOf(WagerProcessingNotImplementedError);
+    await expect(processor().execute({ ...command(target, Kind.Win, { referenceExternalTransactionId: 'reference' }), kind })).rejects.toBeInstanceOf(WagerProcessingNotImplementedError);
     await unchanged(target);
   });
   test.each([Kind.Win, Kind.Loss])('%s PENDING fixture cannot be returned as a completed result', async kind => {

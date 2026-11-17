@@ -37,6 +37,7 @@ class WinLossWork extends WagerProcessingUnitOfWork {
       findIdentityCandidates: async key => [...rows.values()].filter(tx => tx.idempotencyKey === key.idempotencyKey
         || (tx.providerId === key.providerId && tx.externalTransactionId === key.externalTransactionId)),
       insertPending: async tx => { step('pending'); rows.set(tx.id, transactionMapper.toDomain(transactionMapper.toRecord(tx))); },
+      findReference: async () => { throw new Error('Unreferenced operations must not load references'); },
       loadTransaction: async id => rows.get(id),
       saveWallet: async () => { step('wallet'); },
       completeTransaction: async tx => { step('result'); rows.set(tx.id, transactionMapper.toDomain(transactionMapper.toRecord(tx))); },
@@ -96,9 +97,9 @@ describe('WIN and LOSS application (5.4)', () => {
     expect(result).toMatchObject({ status: Status.Rejected, failureCode: FailureCode.AmountLimitExceeded, balance: { amount: '92233720368547758.07' } });
     expect(work.wallet.version).toBe(1); expect(work.ledger).toHaveLength(0);
   });
-  test.each([Kind.Win, Kind.Loss])('%s reference stays unavailable before persistence', async kind => {
+  test.each([Kind.Bet, Kind.Loss])('%s reference stays unavailable before persistence', async kind => {
     const work = new WinLossWork();
-    await expect(processor(work).execute(command(kind, { referenceExternalTransactionId: 'reference' }))).rejects.toBeInstanceOf(WagerProcessingNotImplementedError);
+    await expect(processor(work).execute({ ...command(Kind.Win, { referenceExternalTransactionId: 'reference' }), kind })).rejects.toBeInstanceOf(WagerProcessingNotImplementedError);
     expect(work.calls).toHaveLength(0);
   });
   test.each([Kind.Win, Kind.Loss])('%s rejects changed payload or kind under the same key', async kind => {

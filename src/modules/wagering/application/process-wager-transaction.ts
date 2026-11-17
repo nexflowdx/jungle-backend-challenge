@@ -19,7 +19,7 @@ export type ProcessWagerTransactionCommand = SupportedWagerCommand | { readonly 
 
 export interface ProcessWagerTransactionResult {
   readonly transactionId: string;
-  readonly status: Status.Processed | Status.Rejected;
+  readonly status: Status.Processed | Status.Rejected | Status.PendingReference;
   readonly balance: Readonly<MoneyProps>;
   readonly failureCode?: FailureCode;
   readonly idempotentReplay: boolean;
@@ -35,7 +35,7 @@ export class WagerProcessingNotImplementedError extends Error {
 }
 export class WagerResultUnavailableError extends Error {
   readonly code = 'WAGER_RESULT_NOT_AVAILABLE';
-  constructor() { super('No completed wager result is available'); this.name = 'WagerResultUnavailableError'; }
+  constructor() { super('No persisted wager result or acceptance is available'); this.name = 'WagerResultUnavailableError'; }
 }
 export class WagerWalletNotFoundError extends Error {
   readonly code = 'WALLET_NOT_FOUND';
@@ -53,7 +53,7 @@ export class ProcessWagerTransaction {
   ) {}
 
   async execute(command: ProcessWagerTransactionCommand): Promise<ProcessWagerTransactionResult> {
-    if ((command.kind !== Kind.Bet && command.kind !== Kind.Win && command.kind !== Kind.Loss) || command.referenceExternalTransactionId !== undefined) {
+    if ((command.kind !== Kind.Bet && command.kind !== Kind.Win && command.kind !== Kind.Loss) || (command.referenceExternalTransactionId !== undefined && command.kind !== Kind.Win)) {
       throw new WagerProcessingNotImplementedError(command.kind);
     }
     assertIdentifier(command.correlationId);
@@ -79,12 +79,16 @@ export class ProcessWagerTransaction {
         if (!wallet) throw new WagerWalletNotFoundError();
         const outcome = await this.identity.resolve(candidate, scope);
         if (outcome.kind === 'identity-replay') return this.result(await scope.loadTransaction(outcome.transactionId), true);
-        const entry = candidate.process(wallet, { at: this.runtime.now(), ledgerEntryId: this.runtime.newId(), priorReversals: [] });
+        const reference = candidate.referenceExternalTransactionId === undefined ? undefined
+          : await scope.findReference(candidate.providerId, candidate.referenceExternalTransactionId);
+        const at = this.runtime.now();
+        const entry = candidate.process(wallet, { at, ledgerEntryId: this.runtime.newId(), priorReversals: [],
+          ...(reference === undefined ? {} : { reference }) });
         if (entry) await scope.saveWallet(wallet);
         await scope.completeTransaction(candidate);
         if (entry) await scope.insertLedgerEntry(entry);
         const events = createTransactionEvents(candidate, wallet, entry, () => ({
-          ...context, eventId: this.runtime.newId(), occurredAt: candidate.completedAt!,
+          ...context, eventId: this.runtime.newId(), occurredAt: candidate.completedAt ?? at,
         }));
         await scope.insertEvents(events);
         return this.result(candidate, false);
@@ -100,8 +104,12 @@ export class ProcessWagerTransaction {
   }
 
   private result(transaction: WagerTransaction | undefined, replay: boolean): ProcessWagerTransactionResult {
-    if (!transaction || (transaction.kind !== Kind.Bet && transaction.kind !== Kind.Win && transaction.kind !== Kind.Loss) || !transaction.balance || !transaction.completedAt
-      || (transaction.status !== Status.Processed && transaction.status !== Status.Rejected)
+    if (!transaction || (transaction.kind !== Kind.Bet && transaction.kind !== Kind.Win && transaction.kind !== Kind.Loss)
+      || !transaction.balance) throw new WagerResultUnavailableError();
+    if (transaction.status === Status.PendingReference) {
+      if (transaction.kind !== Kind.Win || !transaction.referenceExternalTransactionId || !transaction.acceptedBalance
+        || transaction.completedAt || transaction.failureCode) throw new WagerResultUnavailableError();
+    } else if (!transaction.completedAt || (transaction.status !== Status.Processed && transaction.status !== Status.Rejected)
       || (transaction.status === Status.Rejected && !transaction.failureCode)) throw new WagerResultUnavailableError();
     return Object.freeze({ transactionId: transaction.id, status: transaction.status,
       balance: Object.freeze(transaction.balance.toJSON()), idempotentReplay: replay,

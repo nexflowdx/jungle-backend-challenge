@@ -9,6 +9,7 @@ const at = new Date('2026-11-17T12:00:00.000Z');
 const identity = new WagerTransactionIdentity();
 const unusedFinancial = {
   lockWallet: async () => { throw new Error('Identity classification must not lock wallets'); },
+  findReference: async () => { throw new Error('Identity classification must not load references'); },
   loadTransaction: async () => { throw new Error('Identity classification must not load results'); },
   saveWallet: async () => { throw new Error('Identity classification must not change wallets'); },
   completeTransaction: async () => { throw new Error('Identity classification must not complete transactions'); },
