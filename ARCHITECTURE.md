@@ -1,11 +1,12 @@
-# Arquitetura até o incremento 5.7 (verificações PostgreSQL ampliadas pendentes)
+# Arquitetura até o incremento 5.8 (validação HTTP no CI pendente)
 
 Monólito modular NestJS: `WalletsModule`, `WageringModule`, `MessagingModule` e
 `OperationsModule`. O caso de uso de abertura está implementado em Wallets;
 `ProcessWagerTransaction` processa BET, WIN sem referência e LOSS. WIN com referência
 é validada ou aceita duravelmente em PENDING_REFERENCE. REFUND e ROLLBACK usam a
-mesma fronteira para reversões integrais. Resolução agendada de pendências e entradas
-HTTP/SQS continuam nos próximos incrementos.
+mesma fronteira para reversões integrais. POST /wallets e POST /wagering/transactions
+expõem esses casos de uso desde 5.8. Resolução de pendências, consultas e SQS
+continuam nos próximos incrementos.
 As camadas serão adicionadas conforme seus casos de uso, preservando o domínio
 em TypeScript puro, sem decorators ou dependências de NestJS/ORM.
 
@@ -18,14 +19,16 @@ Desenvolvimento e testes também usam emissão por `tsc`, pois o experimento 0.3
 validou esse caminho de injeção por tipo. `bun run check` verifica tipos, build,
 bootstrap sem portas/serviços externos e testes locais; `bun run dev` compila
 e acompanha alterações, iniciando HTTP apenas em `127.0.0.1:3000`.
-Não há endpoints financeiros ou health implementados neste incremento.
+Os dois endpoints financeiros de escrita estão implementados; health e consultas
+permanecem fora do escopo deste incremento.
 
 MikroORM 6.6.18 e PostgreSQL possuem mapeamentos separados do domínio em
 `src/database`. A prova descartável PG/SQS fica em
 `experiments/compatibility-03`, exclusivamente no workflow manual de compatibilidade;
-sua execução remota depende de autorização. A aplicação base ainda não se conecta
-a banco ou filas; `createPersistence` inicializa explicitamente o ORM e cada
-requisição/trabalho deverá usar `em.fork()`. Não há sincronização automática de schema.
+sua execução remota depende de autorização. O bootstrap de verificação permanece
+sem banco ou filas. O start HTTP inicializa createPersistence explicitamente, com
+configuração obrigatória, e os adapters usam em.fork() por transação. Não há
+sincronização automática de schema ou execução de migrations no start.
 
 `Money` é imutável (campos privados e instância congelada), com centavos em
 `bigint` e limite simétrico de magnitude `92233720368547758.07`. Os contratos
@@ -123,7 +126,8 @@ desenvolvedor. Os 200 casos até 5.4 também foram validados no Actions, conform
 confirmação do desenvolvedor. Os 236 casos até 5.5 também passaram no Actions,
 conforme confirmação do desenvolvedor. Os 326 casos até 5.6 também passaram no
 Actions, conforme confirmação do desenvolvedor. As verificações ampliadas no 5.7
-ainda aguardam execução nesse ambiente.
+foram validadas no Actions até 5.7, conforme confirmação do desenvolvedor.
+As alterações de HTTP do 5.8 ainda aguardam validação nesse ambiente.
 
 Quatro migrations reversíveis criam Wallet/transações, ledger, correspondência
 financeira e Inbox/Outbox. CHECKs impedem escala excedente, valores especiais,
@@ -158,10 +162,10 @@ compatibilidade com `exactOptionalPropertyTypes`; não altera o runtime. `strict
 17.12 aprovado, em tmpfs/rede interna sem portas publicadas. Seu runner recusa
 outros hosts, bancos e ambientes. A suíte cobre migrations up/down/up, SQL inválido,
 precisão, concorrência de escritores, privilégios e rollback financeiro com
-Inbox/Outbox, abertura atômica, infraestrutura transacional, identidade, BET, WIN, LOSS, referências e reversões. Testes locais pulam as oito suítes
+Inbox/Outbox, abertura atômica, infraestrutura transacional, identidade, BET, WIN, LOSS, referências, reversões e HTTP. Testes locais pulam as nove suítes
 PostgreSQL. Não se executa Docker na VPS. O runner exige relatório JUnit com pelo
-menos 326 casos reais: 55 de persistência, 32 de abertura, 9 de infraestrutura de 5.1,
-32 de identidade, 31 de BET, 41 de WIN/LOSS, 36 de referência e 90 de reversões. Cada arquivo deve atingir
+menos 331 casos reais: 55 de persistência, 32 de abertura, 9 de infraestrutura de 5.1,
+32 de identidade, 31 de BET, 41 de WIN/LOSS, 36 de referência, 90 de reversões e 5 de HTTP. Cada arquivo deve atingir
 seu mínimo com assertivas; hooks não contam. Skips, falhas, relatório ausente ou
 indisponibilidade do banco falham o job. A contagem local de skips inclui hooks.
 
@@ -227,7 +231,7 @@ callbacks concorrentes. Essas verificações não representam processamento de a
 Os 96 casos até 5.1 foram validados no Actions com PostgreSQL real, conforme
 confirmação do desenvolvedor. Continuam exigidos pelo mesmo workflow manual,
 com assertivas por arquivo e zero skips. Locks financeiros, processamento,
-HTTP e SQS permanecem nos próximos incrementos.
+A entrada HTTP foi acrescentada em 5.8; SQS permanece nos próximos incrementos.
 
 ## Identidade persistente — incremento 5.2
 
@@ -518,8 +522,78 @@ localmente que a leitura da wallet para lock não fornece o resultado histórico
 As lacunas encontradas eram de evidência de reinicialização e comparação completa
 do estado persistido; não foi necessário reescrever produção ou criar novos casos.
 A contagem continua em 326 testes PostgreSQL, com os mesmos mínimos por arquivo,
-assertivas obrigatórias e zero skips no runner. As novas assertivas de integração
-ainda precisam de execução no Actions. Não houve HTTP, SQS, worker, migration,
+assertivas obrigatórias e zero skips no runner. As assertivas de integração até 5.7 passaram no Actions, conforme confirmação
+do desenvolvedor. Não houve HTTP, SQS, worker, migration,
 commit, push ou disparo de workflow. Pendências continuam sem resolução automática;
 reinicialização neste teste significa novo contexto da aplicação e novo cliente SQL,
 não o harness de processos independentes previsto para o Marco 6.
+
+
+## Entrada HTTP — incremento 5.8
+
+HttpApiModule compõe os mesmos WalletsModule e WageringModule, recebendo suas portas
+transacionais e o fechamento opcional do recurso. Controllers recebem OpenWallet e
+ProcessWagerTransaction reais; não calculam dinheiro, consultam referências nem
+escrevem SQL. createHttpPersistence fornece os adapters PostgreSQL existentes e
+fecha o ORM no shutdown. Start/dev exige PGHOST, PGPORT, PGDATABASE, PGUSER e
+PGPASSWORD explícitos, sem DSN de fallback. A aplicação escuta em 127.0.0.1:3000.
+O bootstrap-only mantém seu caminho sem conexão; um teste separado inicializa a
+composição HTTP com os adapters reais e connect:false, sem consultar o banco.
+
+| Rota/resultado | HTTP e contrato |
+|---|---|
+| POST /wallets | playerId e initialBalance {amount,currency}; retorna id, playerId, balance e version com 201. |
+| POST /wagering/transactions | Campos de negócio do README, referência opcional quando suportada e um header Idempotency-Key obrigatório. |
+| PROCESSED, inclusive replay | 200 com transactionId, status, balance e idempotentReplay. |
+| PENDING_REFERENCE, inclusive replay | 202 com o snapshot de aceitação persistido, sem prometer resolução automática. |
+| REJECTED, inclusive replay | 422 com resultado persistido e failureCode original. |
+| DTO/header inválido | 400, INVALID_REQUEST, antes de executar o caso de uso. |
+| Identidade conflitante ou wallet duplicada | 409, WAGER_IDENTITY_CONFLICT com reason, ou WALLET_ALREADY_EXISTS. |
+| Wallet inexistente ou pertencente a outro jogador | 422 com failureCode WALLET_NOT_FOUND/WALLET_MISMATCH; sem fabricar transação ou saldo de resultado. |
+| Infraestrutura transitória | 503, SERVICE_UNAVAILABLE, sem resultado financeiro fictício. |
+| Falha técnica inesperada | 500, INTERNAL_ERROR, sem SQL, stack trace ou credenciais. |
+
+Os pipes validam objetos e propriedades obrigatórias, rejeitam arrays, null, campos
+extras e tipos incorretos. amount precisa ser string decimal; não há transformação
+implícita de tipos. Money.from valida moeda, escala e magnitude, e a factory já
+existente valida valores positivos e referências obrigatórias, sem duplicar regras
+financeiras. LOSS admite zero; OPENING é recusada na API. BET/LOSS com referência
+continuam fora do contrato suportado. Excesso de saldo durante processamento continua
+sendo rejeição de negócio, não erro de DTO. Body idempotencyKey, payloadHash e
+correlationId não são aceitos. Idempotency-Key é um único token ASCII imprimível,
+sem espaço ou vírgula; duplicação de header é inválida. Identificadores mantêm a
+validação do domínio. O contexto de correlação é gerado no servidor; headers e
+metadados de transporte continuam excluídos do fingerprint de negócio existente.
+
+O filtro distingue exceções de contrato, domínio, identidade e infraestrutura.
+Time-outs, conexão indisponível e retentativas esgotadas retornam 503; uma fixture
+PENDING sem aceite durável também não é convertida em 202. UNIQUE genérica e outros
+erros SQL não são tratados como conflito de identidade. Só os conflitos traduzidos
+pelos adapters existentes produzem 409. A outbox continua sendo persistida pelo caso
+de uso, sem publicação externa pelo controller.
+
+Autenticação não foi implementada, conforme opção permitida pela seção 2 do README.
+ProviderAuthenticationGuard é um guard no-op explicitamente ligado aos controllers,
+sem senha própria, usuários locais ou token artesanal. O ponto de extensão é substituir
+esse guard pela integração com IdP externo/OIDC, validando assinatura, emissor,
+audiência, expiração e vínculo entre a identidade autenticada e providerId. A entrada
+atual confia no providerId informado: este incremento não fornece controle de acesso.
+
+Os testes HTTP locais usam roteamento, pipes, guard, filtro e serialização reais do
+NestJS/Express por streams em memória, sem listener ou conexão de rede. Os casos de
+uso e o domínio são reais, com portas transacionais de teste; isso não prova lock,
+constraints ou atomicidade SQL. Há teste de composição real do ORM sem conexão e
+configuração explícita. Os 93 casos unitários novos cobrem entrada/saída, precisão,
+BRL/USD, header, OPENING, erros, replay, conflitos e shutdown; o validador de relatório
+ganha quatro casos para exigir a nova suíte PostgreSQL com assertivas e zero skips.
+
+Cinco casos HTTP com PostgreSQL real foram acrescentados ao workflow manual:
+aberturas e duplicidade; BET/WIN/LOSS e replay histórico/conflitos; rejeição e DTO
+inválido sem escrita; aceite pendente após chegada da referência; REFUND/ROLLBACK e
+replay conforme a política por tipo. O runner exige 331 casos, preservando os 326
+anteriores. Nenhum teste PostgreSQL novo foi executado localmente. Sua execução e
+validação no CI continuam pendentes. Também faltam testes HTTP com queda real do
+banco/timeout produzindo 503, perda de conexão do cliente após commit e concorrência
+HTTP entre processos independentes. As garantias financeiras anteriores continuam
+cobertas pelas suítes PostgreSQL dos casos de uso. Não foram implementados consultas,
+reconciliação, health, SQS, workers, resolução de pendências ou autenticação real.

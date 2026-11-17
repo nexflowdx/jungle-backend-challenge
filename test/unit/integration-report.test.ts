@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test';
-import { assertPostgresReport, minimumPersistenceTests, minimumWalletOpeningTests, minimumWagerInfrastructureTests, minimumWagerIdentityTests, minimumBetProcessingTests, minimumWinLossProcessingTests, minimumReferenceProcessingTests, minimumPostgresTests } from '../../scripts/integration-report';
+import { assertPostgresReport, minimumPersistenceTests, minimumWalletOpeningTests, minimumWagerInfrastructureTests, minimumWagerIdentityTests, minimumBetProcessingTests, minimumWinLossProcessingTests, minimumReferenceProcessingTests, minimumReversalProcessingTests, minimumPostgresTests } from '../../scripts/integration-report';
 
 const report = (attributes = '', cases = minimumPostgresTests, content = '') =>
   `<testsuites tests="${cases}" skipped="0" failures="0" assertions="100" ${attributes}>` +
@@ -10,7 +10,8 @@ const report = (attributes = '', cases = minimumPostgresTests, content = '') =>
           : index < minimumPersistenceTests + minimumWalletOpeningTests + minimumWagerInfrastructureTests + minimumWagerIdentityTests ? 'wager-identity'
             : index < minimumPersistenceTests + minimumWalletOpeningTests + minimumWagerInfrastructureTests + minimumWagerIdentityTests + minimumBetProcessingTests ? 'bet-processing'
               : index < minimumPersistenceTests + minimumWalletOpeningTests + minimumWagerInfrastructureTests + minimumWagerIdentityTests + minimumBetProcessingTests + minimumWinLossProcessingTests ? 'win-loss-processing'
-                : index < minimumPersistenceTests + minimumWalletOpeningTests + minimumWagerInfrastructureTests + minimumWagerIdentityTests + minimumBetProcessingTests + minimumWinLossProcessingTests + minimumReferenceProcessingTests ? 'reference-processing' : 'reversal-processing';
+                : index < minimumPersistenceTests + minimumWalletOpeningTests + minimumWagerInfrastructureTests + minimumWagerIdentityTests + minimumBetProcessingTests + minimumWinLossProcessingTests + minimumReferenceProcessingTests ? 'reference-processing'
+                  : index < minimumPersistenceTests + minimumWalletOpeningTests + minimumWagerInfrastructureTests + minimumWagerIdentityTests + minimumBetProcessingTests + minimumWinLossProcessingTests + minimumReferenceProcessingTests + minimumReversalProcessingTests ? 'reversal-processing' : 'http-api';
     return `<testcase name="passed-${index}" file=".test-dist/test/integration/${file}.test.js" assertions="1"/>`;
   }).join('') + content + '</testsuites>';
 
@@ -18,7 +19,7 @@ test('integration report accepts a complete run with assertions and no skips', (
   expect(() => assertPostgresReport(report())).not.toThrow();
 });
 test.each([
-  '', '<testsuites/>', report('', 0), report('', 51), report('', 52), report('', 87), report('', 96), report('', 128), report('', 159), report('', 200), report('', 236), report('', minimumPostgresTests - 1),
+  '', '<testsuites/>', report('', 0), report('', 51), report('', 52), report('', 87), report('', 96), report('', 128), report('', 159), report('', 200), report('', 236), report('', 326), report('', minimumPostgresTests - 1),
   report().replace('skipped="0"', 'skipped="1"'),
   report().replace('failures="0"', 'failures="1"'),
   report().replace('assertions="100"', 'assertions="0"'),
@@ -48,6 +49,9 @@ test.each([
   report().replaceAll('reversal-processing.test.js', 'other.test.js'),
   report().replace(/name="passed-\d+" file="([^"]*reversal-processing.test.js)" assertions="1"/, 'name="(unnamed)" file="$1" assertions="1"'),
   report().replace(/reversal-processing\.test\.js" assertions="1"/, 'reversal-processing.test.js" assertions="0"'),
+  report().replaceAll('http-api.test.js', 'other.test.js'),
+  report().replace(/name="passed-\d+" file="([^"]*http-api.test.js)" assertions="1"/, 'name="(unnamed)" file="$1" assertions="1"'),
+  report().replace(/http-api\.test\.js" assertions="1"/, 'http-api.test.js" assertions="0"'),
   report().replace('assertions="1"', 'assertions="0"'),
   report().replace('name="passed-0"', 'name="(unnamed)"'),
 ])('integration report fails closed for incomplete, skipped or failing run %#', xml => {
