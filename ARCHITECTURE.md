@@ -1,4 +1,4 @@
-# Arquitetura até o incremento 5.8 (validação HTTP no CI pendente)
+# Arquitetura até 5.9 e Marco 6 (novas validações PostgreSQL pendentes)
 
 Monólito modular NestJS: `WalletsModule`, `WageringModule`, `MessagingModule` e
 `OperationsModule`. O caso de uso de abertura está implementado em Wallets;
@@ -103,7 +103,8 @@ os casos de abertura e processamento persistem eventos; publicação ainda não 
 
 O caso de uso carrega referência e reversões sob lock da Wallet no PostgreSQL.
 As unicidades estão nas migrations; locks e replay persistente já são usados pelo
-processamento. O harness com três processos permanece previsto para o Marco 6.
+processamento. O harness com três processos do Marco 6 está preparado, com execução
+financeira ainda pendente no CI isolado.
 
 ## Persistência — incrementos 3.1 a 3.5
 
@@ -127,7 +128,8 @@ confirmação do desenvolvedor. Os 236 casos até 5.5 também passaram no Action
 conforme confirmação do desenvolvedor. Os 326 casos até 5.6 também passaram no
 Actions, conforme confirmação do desenvolvedor. As verificações ampliadas no 5.7
 foram validadas no Actions até 5.7, conforme confirmação do desenvolvedor.
-As alterações de HTTP do 5.8 ainda aguardam validação nesse ambiente.
+Os 331 casos até 5.8 passaram no Actions com PostgreSQL real, conforme confirmação
+do desenvolvedor. Os casos de 5.9 e Marco 6 ainda aguardam essa execução.
 
 Quatro migrations reversíveis criam Wallet/transações, ledger, correspondência
 financeira e Inbox/Outbox. CHECKs impedem escala excedente, valores especiais,
@@ -162,10 +164,10 @@ compatibilidade com `exactOptionalPropertyTypes`; não altera o runtime. `strict
 17.12 aprovado, em tmpfs/rede interna sem portas publicadas. Seu runner recusa
 outros hosts, bancos e ambientes. A suíte cobre migrations up/down/up, SQL inválido,
 precisão, concorrência de escritores, privilégios e rollback financeiro com
-Inbox/Outbox, abertura atômica, infraestrutura transacional, identidade, BET, WIN, LOSS, referências, reversões e HTTP. Testes locais pulam as nove suítes
+Inbox/Outbox, abertura atômica, infraestrutura transacional, identidade, BET, WIN, LOSS, referências, reversões e HTTP, atomicidade e multiprocesso. Testes locais pulam as onze suítes
 PostgreSQL. Não se executa Docker na VPS. O runner exige relatório JUnit com pelo
-menos 331 casos reais: 55 de persistência, 32 de abertura, 9 de infraestrutura de 5.1,
-32 de identidade, 31 de BET, 41 de WIN/LOSS, 36 de referência, 90 de reversões e 5 de HTTP. Cada arquivo deve atingir
+menos 347 casos reais: 55 de persistência, 32 de abertura, 9 de infraestrutura de 5.1,
+32 de identidade, 31 de BET, 41 de WIN/LOSS, 36 de referência, 90 de reversões, 5 de HTTP, 6 de atomicidade e 10 multiprocesso. Cada arquivo deve atingir
 seu mínimo com assertivas; hooks não contam. Skips, falhas, relatório ausente ou
 indisponibilidade do banco falham o job. A contagem local de skips inclui hooks.
 
@@ -372,8 +374,8 @@ do limite seguro de number, BRL/USD, limite monetário, LOSS sem movimento, repl
 duplicatas e créditos distintos concorrentes, isolamento entre wallets, espera real
 pelo lock, rollback após cada escrita e falhas SQL de outbox e commit diferido.
 Os 200 casos até 5.4 foram validados no Actions, conforme confirmação do desenvolvedor.
-O harness de múltiplos processos e as operações posteriores permanecem pendentes
-dos respectivos incrementos.
+O harness de múltiplos processos está descrito no Marco 6; operações posteriores
+continuam pendentes dos respectivos incrementos.
 
 
 ## Referência ausente e aceite durável — incremento 5.5
@@ -590,10 +592,125 @@ ganha quatro casos para exigir a nova suíte PostgreSQL com assertivas e zero sk
 Cinco casos HTTP com PostgreSQL real foram acrescentados ao workflow manual:
 aberturas e duplicidade; BET/WIN/LOSS e replay histórico/conflitos; rejeição e DTO
 inválido sem escrita; aceite pendente após chegada da referência; REFUND/ROLLBACK e
-replay conforme a política por tipo. O runner exige 331 casos, preservando os 326
-anteriores. Nenhum teste PostgreSQL novo foi executado localmente. Sua execução e
-validação no CI continuam pendentes. Também faltam testes HTTP com queda real do
+replay conforme a política por tipo. Até 5.8, o runner exigia 331 casos, preservando
+os 326 anteriores. Esses casos passaram no Actions, conforme confirmação do
+desenvolvedor. Não foram executados contra um banco local ou serviços da VPS. Também faltam testes HTTP com queda real do
 banco/timeout produzindo 503, perda de conexão do cliente após commit e concorrência
 HTTP entre processos independentes. As garantias financeiras anteriores continuam
 cobertas pelas suítes PostgreSQL dos casos de uso. Não foram implementados consultas,
 reconciliação, health, SQS, workers, resolução de pendências ou autenticação real.
+
+
+## Sprint consolidada — 5.9 e Marco 6
+
+A auditoria encontrou testes SQL de falha após identidade, wallet, resultado,
+ledger e outbox, erros SQL e constraints diferidas no commit nas suítes de 5.3–5.6.
+Eles permanecem intactos. Não foi encontrado defeito financeiro que justificasse
+alterar produção, domínio, OpenWallet, identidade, schema ou migrations. A sprint
+acrescenta evidências nos pontos ausentes e usa somente decorators de portas em test/.
+
+### 5.9 — atomicidade e recuperação
+
+Seis casos novos verificam persistência parcial da outbox e a fronteira HTTP:
+BET, WIN, REFUND e ROLLBACK falham depois de inserir somente o primeiro evento
+SQL, deixando o evento de saldo ausente. O adapter deve desfazer também wallet,
+versão, resultado, identidade, ledger e esse primeiro evento. O teste compara todos
+os registros e campos antes/depois, repete a identidade e exige uma única execução
+financeira seguida de replay. Dois casos HTTP falham após o primeiro evento ou
+após todo o callback, antes do commit: respondem 500 sem sucesso financeiro; o
+retry normal confirma uma vez e o seguinte devolve replay. O snapshot não é apenas
+uma contagem: inclui valores, payloads, versões, datas e todos os registros da wallet.
+Os cenários de queda do processo antes/depois do commit são integrados ao Marco 6.
+
+### 6.1 — processos, conexões e sincronização
+
+BunProcessClient inicia três executáveis Bun independentes com Bun.spawn, não
+worker_threads nem uma simulação de concorrência no processo do teste. Cada worker
+financeiro inicializa seu próprio MikroORM e pool PostgreSQL. Ele recusa iniciar
+fora de GITHUB_ACTIONS=true, PERSISTENCE_TEST_CONTAINER=1 e do host/banco/usuário
+isolados já usados pelo runner. Não executa migrations nem abre listeners.
+
+O protocolo de teste usa linhas JSON em pipes stdin/stdout. Há confirmação de
+readiness, prepare, armed, run, running, checkpoints, release, resultado e stop.
+O coordenador aguarda as 50 confirmações de entrada antes de liberar o gate SQL.
+Os primeiros pedidos de cada processo chegam ao lock antes dos demais, evitando
+depender da ordem de aquisição do pool. Os outros 47 são iniciados enquanto esses
+três estão bloqueados. Assim, são 50 pedidos concorrentes distribuídos 17/17/16,
+com até cinco conexões por processo, e não 50 sessões SQL ativas simultaneamente.
+Com o coordenador, o limite teórico é de 20 conexões SQL, sem alterar o pool da aplicação.
+
+Readiness informa PID do SO e pg_backend_pid. O teste exige três PIDs diferentes
+do coordenador e três backends PostgreSQL distintos, conferidos no servidor por
+application_name=wager-process-<PID> e pelo banco corrente. Os checkpoints de lock
+consultam o backend da transação efetiva. O coordenador segura a wallet, observa os
+três pedidos em wait_event_type=Lock no pg_stat_activity e só então libera o gate.
+Sleeps curtos apenas repetem consultas a uma condição SQL, com deadline; não decidem
+quem pode prosseguir. O CI emitirá evidências JSON de PIDs, backends e contagens.
+
+Há limites de 10 s para startup, 5 s para armar/checkpoints, 12 s por pedido, 8 s
+para uma pausa, 4 s para observar locks e 3 s para shutdown, com SIGKILL limitado
+caso o filho não encerre. Os casos novos multiprocesso têm deadline de 30 s para
+incluir startup e cleanup; o timeout padrão anterior dos demais casos não mudou.
+Cada cenário fecha todos os filhos em finally, inclusive os substituídos. O worker
+aborta suas pausas ao receber stop/EOF do pai e fecha o ORM após encerrar operações.
+O pai verifica também que não restaram sessões desses workers no pg_stat_activity.
+Não há pg_terminate_backend, mudança de configuração do PostgreSQL ou serviço extra.
+
+### 6.2–6.4 — cenários financeiros reais preparados
+
+Os dez casos multiprocesso são:
+
+- Uma BET idêntica enviada 50 vezes: uma PROCESSED não replay, 49 replays, um débito,
+  uma identidade, versão 2 e um único conjunto de eventos. Depois de outra movimentação,
+  substituir um processo deve preservar o resultado histórico em nova conexão.
+- Payload divergente e ID externo com outra chave: dois processos esperam pelo
+  vencedor e retornam os conflitos previstos, sem segundo efeito.
+- Identidade global disputada entre wallets: a segunda operação bloqueia sua wallet
+  e espera a UNIQUE ainda não confirmada da primeira; depois do rollback do conflito,
+  um terceiro processo deve conseguir movimentar a segunda wallet. Isso exercita
+  recuperação após UNIQUE real, não somente consultas antecipadas.
+- Duas BETs de 80.00 contra 100.00: uma processada, uma INSUFFICIENT_FUNDS, saldo
+  20.00 e exatamente um débito, sem lost update.
+- Uma wallet livre progride no terceiro processo enquanto uma segunda instância
+  espera a wallet retida pelo primeiro; a liberação não ocorre antes dessa conclusão.
+- Três REFUNDs concorrentes: uma processada e duas ALREADY_REVERSED.
+- Três ROLLBACKs de WIN concorrentes com saldo para apenas um débito: um processado
+  e dois ALREADY_REVERSED, mantendo a validação de duplicidade antes da insuficiência.
+- REFUND e ROLLBACK da mesma BET, mais uma REFUND concorrente: dois efeitos permitidos
+  por tipo, uma REFUND rejeitada e saldo/ledger consistentes. A política econômica
+  documentada foi preservada integralmente.
+- Morte do worker com todas as gravações ainda não confirmadas: o observador externo
+  não vê estado parcial; dois outros processos repetem a identidade e confirmam um
+  único efeito. O ID do candidato morto não pode aparecer no banco.
+- Morte após commit e antes da resposta IPC: retries de outros processos encontram
+  somente replay, sem novo débito. Um novo processo substitui o morto e repete o replay.
+
+Todos conferem saldo exato reconstruído pelo ledger, versões, direção/valor dos
+lançamentos, resultados persistidos e eventos correspondentes na outbox. O harness
+usa os casos de uso e adapters reais; nenhum resultado financeiro é simulado.
+
+### Validação, custo e limites
+
+Seis testes locais verificam exclusivamente IPC: três processos Bun reais, 50
+mensagens, prepare/run e pause/release, encerramento prematuro, timeout, falha parcial
+de startup e recusa do worker financeiro fora do ambiente permitido. A fixture de
+IPC não importa persistência nem executa dinheiro; seus resultados têm kind=probe,
+que a suíte financeira rejeita. Esses testes não demonstram concorrência PostgreSQL.
+O sandbox local bloqueou escrita em pipes com EPERM; apenas testes locais sem banco
+foram executados fora dele pela autorização da ferramenta. Nenhuma permissão da VPS
+ou do Actions foi alterada.
+
+O runner exige agora 347 casos PostgreSQL com assertivas, zero falhas e zero skips:
+os 331 anteriores, seis de atomicidade e dez multiprocesso. O validador testa mínimos
+por arquivo e rejeita relatório antigo, suíte ausente, caso sem nome ou sem assertivas.
+Workflow e Compose preservam gatilho manual, declaração de orçamento zero, permissões,
+limites de tempo, imagens e isolamento. Docker/Compose, PostgreSQL real, Actions,
+commit e push não foram executados nesta sprint.
+
+Os marcos 5.9, 6.1, 6.2, 6.3 e 6.4 estão implementados/preparados, mas não validados
+financeiramente até o CI isolado executar esses casos. Permanecem riscos de timing,
+limites do ambiente e comportamento do driver que só essa execução pode confirmar.
+São três processos no mesmo container/servidor de teste; não demonstram partição de
+rede entre hosts, failover do PostgreSQL ou queda de toda a máquina. A falha após
+commit perde uma resposta IPC, não um ack SQS nem uma conexão HTTP real. Não há
+SQS, worker de pendências, publisher, autenticação nova ou mudança da política financeira.
