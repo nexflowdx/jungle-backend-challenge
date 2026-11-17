@@ -201,7 +201,7 @@ describe.skipIf(!enabled)('Atomic REFUND and ROLLBACK PostgreSQL integration (5.
         money: { amount: reason === 'rejected' ? '101.00' : '25.00', currency: reason === 'currency' ? 'USD' : 'BRL' } });
       await processor().execute(reference);
     }
-    const input = reverse(target, kind, reference, { money: { amount: '25.00', currency: 'BRL' } });
+    const input = reverse(target, kind, reference, { money: { amount: reference.money.amount, currency: 'BRL' } });
     const finalInput = reason === 'self' ? { ...input, referenceExternalTransactionId: input.externalTransactionId } : input;
     const before = await state(target); const result = await processor().execute(finalInput);
     const codes = { round: FailureCode.ReferenceContextMismatch, currency: FailureCode.ReferenceContextMismatch, wallet: FailureCode.ReferenceContextMismatch,
