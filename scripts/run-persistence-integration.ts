@@ -10,6 +10,7 @@ async function main(): Promise<void> {
   try {
     const report = join(directory, 'results.xml');
     const child = Bun.spawn([process.execPath, 'test', './.test-dist/test/integration/postgres.test.js',
+      './.test-dist/test/integration/wallet-opening.test.js',
       '--timeout=10000', '--reporter=junit', `--reporter-outfile=${report}`], {
       env: { ...process.env, PERSISTENCE_INTEGRATION: '1' }, stdout: 'inherit', stderr: 'inherit',
     });

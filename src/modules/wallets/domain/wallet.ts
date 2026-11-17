@@ -29,7 +29,7 @@ export interface OpenWalletProps {
   readonly playerId: string;
   readonly initialBalance: Money;
   readonly at: Date;
-  /** Supplied by the future atomic opening use case when the balance is positive. */
+  /** Supplied by the atomic opening use case when the balance is positive. */
   readonly opening?: LedgerIdentity;
 }
 

@@ -1,6 +1,8 @@
 // Skipped hooks appear as extra unnamed cases locally; they are not real tests.
-// Expanding test.each yields 55 PostgreSQL cases, including the ORM regressions.
-export const minimumPostgresTests = 55;
+// Counts exclude hooks and expand test.each for each required integration file.
+export const minimumPersistenceTests = 55;
+export const minimumWalletOpeningTests = 32;
+export const minimumPostgresTests = minimumPersistenceTests + minimumWalletOpeningTests;
 
 export function assertPostgresReport(xml: string): void {
   const root = xml.match(/<testsuites\b([^>]*)>/)?.[1];
@@ -14,5 +16,15 @@ export function assertPostgresReport(xml: string): void {
     attribute('skipped') !== 0 || attribute('failures') !== 0 || attribute('assertions') === 0 ||
     /<(?:skipped|failure|error)\b/.test(xml) || (xml.match(/<testcase\b/g)?.length ?? 0) !== tests) {
     throw new Error('PostgreSQL integration must execute all tests with assertions, zero skips and zero failures');
+  }
+  const cases = [...xml.matchAll(/<testcase\b([^>]*)>/g)].map(match => match[1]!);
+  for (const [file, minimum] of [
+    ['postgres', minimumPersistenceTests], ['wallet-opening', minimumWalletOpeningTests],
+  ] as const) {
+    const path = new RegExp(`\\bfile="[^"]*\\/${file}\\.test\\.(?:js|ts)"`);
+    const executed = cases.filter(attributes => path.test(attributes)
+      && !/\bname="\(unnamed\)"/.test(attributes)
+      && Number(attributes.match(/\bassertions="([0-9]+)"/)?.[1] ?? '0') > 0);
+    if (executed.length < minimum) throw new Error(`Missing executed PostgreSQL cases with assertions: ${file}`);
   }
 }

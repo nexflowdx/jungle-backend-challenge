@@ -1,8 +1,8 @@
-# Arquitetura implementada até o Marco 3 (integração PostgreSQL pendente)
+# Arquitetura implementada até o Marco 4 (integração do Marco 4 pendente)
 
 Monólito modular NestJS: `WalletsModule`, `WageringModule`, `MessagingModule` e
-`OperationsModule`. Neste estágio os módulos delimitam responsabilidades; ainda
-não implementam casos de uso ou integrações da aplicação definitiva.
+`OperationsModule`. O caso de uso de abertura está implementado em Wallets;
+processamento de apostas e entradas HTTP/SQS continuam nos próximos marcos.
 As camadas serão adicionadas conforme seus casos de uso, preservando o domínio
 em TypeScript puro, sem decorators ou dependências de NestJS/ORM.
 
@@ -34,7 +34,8 @@ Todas as operações binárias, inclusive comparação e igualdade, rejeitam moe
 diferentes com erro de domínio. Subtração e negação podem produzir resultados
 internos negativos; esses resultados continuam sujeitos ao limite e não são
 aceitos pela factory de entrada externa. A Wallet protege o saldo não negativo;
-as constraints correspondentes foram escritas no Marco 3 e aguardam integração real.
+as constraints correspondentes foram validadas no Marco 3, conforme confirmação
+do desenvolvedor sobre a execução no Actions com PostgreSQL real.
 
 Essa escolha segue o plano aprovado e evita dependência de uma biblioteca decimal
 para soma/subtração em escala fixa. O mapeamento persiste unidades em
@@ -44,7 +45,7 @@ escala e não-negatividade.
 ## Domínio financeiro — incrementos 2.1 a 2.5
 
 `Wallet.open` inicia em versão 1. Abertura positiva exige os IDs do lançamento
-e da transação interna OPENING, fornecidos pelo futuro caso de uso de abertura,
+e da transação interna OPENING, fornecidos pelo caso de uso de abertura,
 e produz um crédito de zero ao saldo inicial sem incrementar a versão.
 Abertura zero não gera lançamento. `debit`/`credit` constroem e validam o
 lançamento antes de alterar saldo, versão e data. Zero e negativos são
@@ -92,7 +93,7 @@ resetar versões. A Wallet verifica invariantes estruturais do snapshot; ledger
 e transações confiam nos dados persistidos, cuja integridade exigirá o schema.
 Os quatro eventos mínimos têm classes concretas, versão 1, dados JSON imutáveis,
 MoneyProps e datas ISO no envelope. O mapper da outbox preserva esse envelope;
-casos de uso e publicação posterior ao commit ainda não existem.
+o caso de uso de abertura persiste os eventos, mas publicação ainda não existe.
 
 O chamador deverá carregar referência e reversões sob lock da Wallet no
 PostgreSQL. As unicidades estão escritas nas migrations; locks dos casos de uso,
@@ -111,8 +112,8 @@ opcionais; valores presentes continuam sujeitos à validação decimal estrita.
 Os relacionamentos escalares declaram `wallet_id` e `transaction_id` explicitamente
 para corresponder às migrations, preservando `mapToPk` e as dependências da Unit
 of Work. Testes locais verificam metadados, SQL gerado e snapshots sem conectar
-ao banco; regressões de persistência, hidratação e atualização no PostgreSQL
-continuam pendentes de execução no ambiente isolado.
+ao banco. O desenvolvedor confirmou a aprovação das regressões do Marco 3 no
+Actions com PostgreSQL real; as regressões novas do Marco 4 aguardam execução.
 
 Quatro migrations reversíveis criam Wallet/transações, ledger, correspondência
 financeira e Inbox/Outbox. CHECKs impedem escala excedente, valores especiais,
@@ -147,8 +148,44 @@ compatibilidade com `exactOptionalPropertyTypes`; não altera o runtime. `strict
 17.12 aprovado, em tmpfs/rede interna sem portas publicadas. Seu runner recusa
 outros hosts, bancos e ambientes. A suíte cobre migrations up/down/up, SQL inválido,
 precisão, concorrência de escritores, privilégios e rollback financeiro com
-Inbox/Outbox. A execução em PostgreSQL real está pendente de autorização no Actions;
-testes locais pulam explicitamente essa suíte. Não se executa Docker na VPS.
-O runner de integração exige relatório JUnit com pelo menos 55 testes reais,
-assertivas e zero skips/falhas; relatório ausente ou indisponibilidade do banco
-falha o job. A contagem local de skips inclui também hooks, excluídos dos 55 casos.
+Inbox/Outbox e abertura atômica. Testes locais pulam explicitamente as duas suítes
+PostgreSQL. Não se executa Docker na VPS. O runner exige relatório JUnit com pelo
+menos 87 casos reais: 55 de persistência e 32 de abertura. Cada arquivo deve atingir
+seu mínimo com assertivas; hooks não contam. Skips, falhas, relatório ausente ou
+indisponibilidade do banco falham o job. A contagem local de skips inclui hooks.
+
+## Abertura atômica — incrementos 4.1 a 4.3
+
+`OpenWallet` recebe player, MoneyProps e contexto de correlação. Reutiliza
+`Money.from`, `Wallet.open`, `WagerTransaction.createOpening` e os eventos do
+domínio, sem repetir cálculos financeiros. Saldo zero cria apenas a wallet;
+saldo positivo cria OPENING processada, crédito no ledger e os eventos
+`WagerTransactionProcessed` e `WalletBalanceChanged`, mantendo versão 1.
+
+Como o schema exige provider, game e round também em OPENING, a aplicação usa
+`internal:wallet-opening`, `wallet-opening` e `opening:<walletId>`. IDs externos e
+chaves internas usam `opening:<walletId>`; o hash SHA-256 representa os campos de
+negócio normalizados em ordem estável, sem horário ou metadados de transporte.
+É uma convenção interna, não um novo requisito nem idempotência para apostas.
+
+`WalletOpeningUnitOfWork` é a porta transacional. O adapter PostgreSQL abre um
+fork por chamada e grava wallet, operação, ledger e outbox na mesma transação.
+Cada etapa faz flush para propagar erros no ponto correspondente, mantendo as
+constraints financeiras diferidas até o commit. Isso custa até quatro flushes
+na abertura positiva; evita depender de gravações ou eventos fora da transação.
+Não há publisher, consulta prévia de duplicidade ou lock global. A constraint
+`wallets_player_currency_unique` resolve disputas concorrentes; apenas essa
+violação vira `WalletAlreadyExistsError`, após rollback. Outros erros propagam.
+
+O resultado imutável só é entregue depois do commit. Relógio e IDs podem ser
+injetados para testes. Decoradores da porta exclusivamente em testes injetam
+falhas após cada gravação e antes do commit, usando o adapter PostgreSQL real.
+Os testes também provocam erro diferido no commit e colisão de outbox e verificam
+ausência de dados parciais, retry limpo e saldo reconstruído pelo ledger.
+
+A composição explícita é `WalletsModule.register(new
+PostgresWalletOpeningUnitOfWork(orm))`, com ORM inicializado pelo chamador.
+O bootstrap padrão continua sem dependências externas. Não foram adicionados
+endpoints ou consumidores. O workflow manual existente mantém isolamento,
+orçamento zero declarado pelo operador e os mesmos limites de recursos/tempo;
+sua execução para o Marco 4 permanece pendente de autorização.

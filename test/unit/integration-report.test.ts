@@ -1,9 +1,11 @@
 import { expect, test } from 'bun:test';
-import { assertPostgresReport, minimumPostgresTests } from '../../scripts/integration-report';
+import { assertPostgresReport, minimumPersistenceTests, minimumPostgresTests } from '../../scripts/integration-report';
 
 const report = (attributes = '', cases = minimumPostgresTests, content = '') =>
   `<testsuites tests="${cases}" skipped="0" failures="0" assertions="100" ${attributes}>` +
-  '<testcase name="passed"/>'.repeat(cases) + content + '</testsuites>';
+  Array.from({ length: cases }, (_, index) =>
+    `<testcase name="passed-${index}" file=".test-dist/test/integration/${index < minimumPersistenceTests ? 'postgres' : 'wallet-opening'}.test.js" assertions="1"/>`,
+  ).join('') + content + '</testsuites>';
 
 test('integration report accepts a complete run with assertions and no skips', () => {
   expect(() => assertPostgresReport(report())).not.toThrow();
@@ -17,8 +19,12 @@ test.each([
   report('', minimumPostgresTests, '<skipped/>'),
   report('', minimumPostgresTests, '<failure/>'),
   report('', minimumPostgresTests, '<error/>'),
-  report().replace('<testcase name="passed"/>', ''),
+  report().replace(/<testcase[^>]*\/>/, ''),
   report().replace('</testsuites>', ''),
+  report().replaceAll('wallet-opening.test.js', 'other.test.js'),
+  report().replaceAll('postgres.test.js', 'wallet-opening.test.js'),
+  report().replace('assertions="1"', 'assertions="0"'),
+  report().replace('name="passed-0"', 'name="(unnamed)"'),
 ])('integration report fails closed for incomplete, skipped or failing run %#', xml => {
   expect(() => assertPostgresReport(xml)).toThrow();
 });
