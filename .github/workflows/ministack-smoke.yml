@@ -1,0 +1,229 @@
+name: MiniStack Smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      zero_spend_confirmed:
+        description: 'Confirmo orçamento do Actions de US$ 0,00 com Stop usage ativado'
+        type: boolean
+        required: true
+        default: false
+
+permissions: {}
+
+jobs:
+  ministack-smoke:
+    # Confirm the account-side spending block before allocating a runner.
+    # This input is an operator declaration, not a billing API verification.
+    # https://docs.github.com/en/billing/concepts/product-billing/github-actions
+    if: ${{ inputs.zero_spend_confirmed }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      # Official project: https://github.com/ministackorg/ministack
+      # Release: https://github.com/ministackorg/ministack/releases/tag/v1.5.39
+      # Published linux/amd64 manifest (not the multi-platform index):
+      # https://hub.docker.com/r/ministackorg/ministack/tags?name=1.5.39
+      MINISTACK_IMAGE: ministackorg/ministack:1.5.39@sha256:856f4e1fe9c740798baf7d19a3c9eda90dfca3e7a90bd0a30e23044fb17d47a9
+      MINISTACK_CONTAINER: ministack-smoke-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - name: Pull and start isolated MiniStack
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout --signal=KILL 120s bash -euo pipefail <<'BASH'
+          docker pull --platform linux/amd64 "${MINISTACK_IMAGE}"
+          docker run --detach --platform linux/amd64 \
+            --name "${MINISTACK_CONTAINER}" \
+            --network none \
+            --env AWS_ACCESS_KEY_ID=test \
+            --env AWS_SECRET_ACCESS_KEY=test \
+            --env AWS_EC2_METADATA_DISABLED=true \
+            --env MINISTACK_ACCOUNT_ID=000000000000 \
+            --env MINISTACK_REGION=us-east-1 \
+            "${MINISTACK_IMAGE}"
+          BASH
+
+      - name: Verify health and FIFO message lifecycle
+        shell: bash
+        run: |
+          set -euo pipefail
+          # boto3 ships in the official image; no host dependencies are installed.
+          # Bound readiness and the entire SQS exchange, including Docker calls.
+          timeout --signal=KILL 100s docker exec -i "${MINISTACK_CONTAINER}" python -u - <<'PY'
+          import hashlib
+          import json
+          import time
+          import urllib.error
+          import urllib.request
+          from urllib.parse import urlparse
+
+          import boto3
+          from botocore.config import Config
+
+          endpoint = "http://127.0.0.1:4566"
+          visibility_timeout = 5
+
+          def require(condition, description):
+              # Explicit checks also work with the image's PYTHONOPTIMIZE=2.
+              if not condition:
+                  raise RuntimeError(description)
+
+          print("Waiting for MiniStack health (35-second deadline).")
+          deadline = time.monotonic() + 35
+          opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+          while True:
+              try:
+                  with opener.open(endpoint + "/_ministack/health", timeout=2) as response:
+                      health = json.load(response)
+                  require(health.get("version") == "1.5.39", "Unexpected MiniStack version")
+                  require(health.get("services", {}).get("sqs") == "available", "SQS unavailable")
+                  break
+              except (urllib.error.URLError, TimeoutError) as error:
+                  if time.monotonic() >= deadline:
+                      raise RuntimeError("MiniStack readiness deadline exceeded") from error
+                  time.sleep(1)
+          print("MiniStack 1.5.39 is ready; creating FIFO queues.")
+
+          sqs = boto3.client(
+              "sqs",
+              endpoint_url=endpoint,
+              region_name="us-east-1",
+              aws_access_key_id="test",
+              aws_secret_access_key="test",
+              config=Config(
+                  connect_timeout=2,
+                  read_timeout=5,
+                  retries={"total_max_attempts": 1},
+                  proxies={},
+              ),
+          )
+
+          def create_queue(name, attributes):
+              url = sqs.create_queue(QueueName=name, Attributes=attributes)["QueueUrl"]
+              parsed = urlparse(url)
+              require(
+                  parsed.scheme == "http"
+                  and parsed.hostname in ("127.0.0.1", "localhost")
+                  and parsed.port == 4566
+                  and parsed.path == "/000000000000/" + name,
+                  "Unexpected queue URL: " + url,
+              )
+              return url
+
+          dlq_url = create_queue("wager-transactions-dlq.fifo", {"FifoQueue": "true"})
+          dlq_attributes = sqs.get_queue_attributes(
+              QueueUrl=dlq_url, AttributeNames=["QueueArn", "FifoQueue"]
+          )["Attributes"]
+          require(dlq_attributes["FifoQueue"] == "true", "DLQ is not FIFO")
+          dlq_arn = dlq_attributes["QueueArn"]
+          require(
+              dlq_arn == "arn:aws:sqs:us-east-1:000000000000:wager-transactions-dlq.fifo",
+              "Unexpected DLQ ARN",
+          )
+          redrive_policy = {"deadLetterTargetArn": dlq_arn, "maxReceiveCount": "3"}
+          queue_url = create_queue("wager-transactions.fifo", {
+              "FifoQueue": "true",
+              "ContentBasedDeduplication": "false",
+              "VisibilityTimeout": str(visibility_timeout),
+              "RedrivePolicy": json.dumps(redrive_policy),
+          })
+          attributes = sqs.get_queue_attributes(
+              QueueUrl=queue_url,
+              AttributeNames=["FifoQueue", "VisibilityTimeout", "RedrivePolicy"],
+          )["Attributes"]
+          require(attributes["FifoQueue"] == "true", "Wager queue is not FIFO")
+          require(int(attributes["VisibilityTimeout"]) == visibility_timeout, "Unexpected visibility timeout")
+          actual_policy = json.loads(attributes["RedrivePolicy"])
+          require(actual_policy["deadLetterTargetArn"] == dlq_arn, "Wrong DLQ association")
+          require(int(actual_policy["maxReceiveCount"]) == 3, "Wrong redrive threshold")
+
+          payload = {
+              "messageId": "msg-smoke-123",
+              "type": "WagerTransactionRequested",
+              "occurredAt": "2026-07-29T15:00:00.000Z",
+              "data": {
+                  "providerId": "provider-smoke",
+                  "externalTransactionId": "transaction-smoke-123",
+                  "idempotencyKey": "provider-smoke:transaction-smoke-123",
+                  "playerId": "0192f28f-5dc0-7d58-bdb2-814ad6a0f4a1",
+                  "walletId": "0192f291-27dd-7d3f-8071-5f8685deef37",
+                  "roundId": "round-smoke-987",
+                  "gameId": "fortune-chimp",
+                  "kind": "BET",
+                  "money": {"amount": "25.00", "currency": "BRL"},
+              },
+          }
+          body = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+          group_id = payload["data"]["walletId"]
+          deduplication_id = payload["data"]["idempotencyKey"]
+          expected_md5 = hashlib.md5(body.encode(), usedforsecurity=False).hexdigest()
+          sent = sqs.send_message(
+              QueueUrl=queue_url,
+              MessageBody=body,
+              MessageGroupId=group_id,
+              MessageDeduplicationId=deduplication_id,
+          )
+          require(isinstance(sent.get("MessageId"), str) and bool(sent["MessageId"]), "Missing SQS MessageId")
+          require(str(sent.get("SequenceNumber", "")).isdigit(), "Invalid FIFO sequence number")
+          require(sent.get("MD5OfMessageBody") == expected_md5, "Send body checksum mismatch")
+
+          print("Receiving and validating the fictional wager.")
+          received = sqs.receive_message(
+              QueueUrl=queue_url,
+              MaxNumberOfMessages=1,
+              WaitTimeSeconds=2,
+              VisibilityTimeout=visibility_timeout,
+              MessageSystemAttributeNames=["All"],
+          ).get("Messages", [])
+          require(len(received) == 1, "Expected exactly one message")
+          message = received[0]
+          require(message.get("MessageId") == sent["MessageId"], "SQS MessageId mismatch")
+          require(message.get("Body") == body, "Raw message body mismatch")
+          require(json.loads(message["Body"]) == payload, "Wager payload mismatch")
+          require(message.get("MD5OfBody") == expected_md5, "Receive body checksum mismatch")
+          system_attributes = message.get("Attributes", {})
+          require(system_attributes.get("MessageGroupId") == group_id, "FIFO group mismatch")
+          require(system_attributes.get("MessageDeduplicationId") == deduplication_id, "Deduplication ID mismatch")
+          require(system_attributes.get("SequenceNumber") == sent["SequenceNumber"], "FIFO sequence mismatch")
+          require(system_attributes.get("ApproximateReceiveCount") == "1", "Unexpected receive count")
+          receipt_handle = message.get("ReceiptHandle")
+          require(isinstance(receipt_handle, str) and bool(receipt_handle), "Missing ReceiptHandle")
+
+          print("Deleting with ReceiptHandle and waiting beyond the visibility timeout.")
+          deleted = sqs.delete_message(QueueUrl=queue_url, ReceiptHandle=receipt_handle)
+          require(deleted["ResponseMetadata"]["HTTPStatusCode"] == 200, "DeleteMessage failed")
+          time.sleep(visibility_timeout + 1)
+          # Repeated long polls detect a silently ineffective deletion after visibility expires.
+          for attempt in range(3):
+              remaining = sqs.receive_message(
+                  QueueUrl=queue_url, MaxNumberOfMessages=1, WaitTimeSeconds=2
+              ).get("Messages", [])
+              require(not remaining, "Deleted message reappeared")
+          require(not sqs.receive_message(
+              QueueUrl=dlq_url, MaxNumberOfMessages=1, WaitTimeSeconds=2
+          ).get("Messages", []), "Unexpected message in DLQ")
+          print("MiniStack FIFO smoke test passed.")
+          PY
+
+      - name: Diagnose MiniStack failure
+        if: ${{ failure() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout --signal=KILL 10s bash -euo pipefail <<'BASH' || true
+          docker inspect --format 'status={{.State.Status}} exit={{.State.ExitCode}} error={{.State.Error}}' "${MINISTACK_CONTAINER}"
+          docker logs --tail 100 "${MINISTACK_CONTAINER}"
+          BASH
+
+      - name: Remove MiniStack container and anonymous volumes
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout --signal=KILL 20s bash -euo pipefail <<'BASH'
+          container_id="$(docker container ls --all --filter "name=^/${MINISTACK_CONTAINER}$" --format '{{.ID}}')"
+          if [[ -n "${container_id}" ]]; then
+            docker rm --force --volumes "${container_id}"
+          fi
+          BASH
