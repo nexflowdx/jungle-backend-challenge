@@ -1,0 +1,83 @@
+name: Compatibility 0.3
+
+on:
+  workflow_dispatch:
+    inputs:
+      zero_spend_confirmed:
+        description: 'Confirmo orçamento do Actions de US$ 0,00 com Stop usage ativado'
+        type: boolean
+        required: true
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  compatibility:
+    # Operator declaration, not a billing API verification; gate runner allocation.
+    if: ${{ inputs.zero_spend_confirmed }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      COMPOSE_FILE: experiments/compatibility-03/compose.yaml
+      COMPOSE_PROJECT_NAME: compatibility-03-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Generate temporary database password
+        shell: bash
+        run: |
+          set +x
+          set -euo pipefail
+          diagnostic_password="$(openssl rand -hex 32)"
+          printf '::add-mask::%s\n' "${diagnostic_password}"
+          printf 'DIAGNOSTIC_DB_PASSWORD=%s\n' "${diagnostic_password}" >> "${GITHUB_ENV}"
+
+      - name: Verify Compose and validate configuration without printing secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout --signal=KILL 10s docker compose version
+          timeout --signal=KILL 10s docker compose config --quiet
+
+      - name: Build client and verify strict typecheck and Nest bootstrap with Bun
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout --signal=KILL 240s docker compose --progress plain build --pull diagnostic
+
+      - name: Start isolated PostgreSQL and wait for readiness
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout --signal=KILL 90s docker compose up --detach --wait --wait-timeout 60 postgres
+
+      - name: Verify ORM connection, commit, rollback and exact monetary round-trip
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout --signal=KILL 70s docker compose run --rm --no-deps -T diagnostic
+
+      - name: Diagnose failure without exposing credentials
+        if: ${{ failure() && env.DIAGNOSTIC_DB_PASSWORD != '' }}
+        shell: bash
+        run: |
+          set +x
+          set -euo pipefail
+          timeout --signal=KILL 10s bash -euo pipefail <<'BASH' || true
+          docker compose ps --all
+          docker compose logs --no-color --tail 80 postgres 2>&1 |
+            while IFS= read -r log_line || [[ -n "${log_line}" ]]; do
+              printf '%s\n' "${log_line//${DIAGNOSTIC_DB_PASSWORD}/[REDACTED]}"
+            done
+          BASH
+
+      - name: Remove experiment containers, networks and volumes
+        if: ${{ always() && env.DIAGNOSTIC_DB_PASSWORD != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout --signal=KILL 30s docker compose down --volumes --remove-orphans --timeout 5

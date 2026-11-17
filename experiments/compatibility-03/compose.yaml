@@ -1,0 +1,49 @@
+services:
+  postgres:
+    image: postgres:17.12-bookworm
+    user: postgres
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    environment:
+      POSTGRES_DB: compatibility_diagnostic
+      POSTGRES_USER: diagnostic
+      POSTGRES_PASSWORD: ${DIAGNOSTIC_DB_PASSWORD:?temporary diagnostic password required}
+      POSTGRES_HOST_AUTH_METHOD: scram-sha-256
+      POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256
+      PGDATA: /var/lib/postgresql/data/pgdata
+    # The postgres account in the pinned Debian image is uid/gid 999.
+    tmpfs:
+      - /var/lib/postgresql/data:uid=999,gid=999,mode=0700
+      - /var/run/postgresql:uid=999,gid=999,mode=0755
+      - /tmp
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -h 127.0.0.1 -p 5432 -U "$$POSTGRES_USER" -d "$$POSTGRES_DB" -t 2']
+      interval: 2s
+      timeout: 3s
+      retries: 25
+      start_period: 5s
+    networks: [diagnostic]
+
+  diagnostic:
+    build:
+      context: .
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    environment:
+      GITHUB_ACTIONS: ${GITHUB_ACTIONS:?GitHub Actions execution required}
+      DIAGNOSTIC_CONTAINER: '1'
+      PGHOST: postgres
+      PGDATABASE: compatibility_diagnostic
+      PGUSER: diagnostic
+      PGPASSWORD: ${DIAGNOSTIC_DB_PASSWORD:?temporary diagnostic password required}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks: [diagnostic]
+
+networks:
+  diagnostic:
+    driver: bridge
+    internal: true
