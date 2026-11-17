@@ -40,7 +40,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          timeout --signal=KILL 10s docker compose config --quiet
+          timeout --signal=TERM --kill-after=10s 60s docker compose config --quiet
 
       - name: Build and verify types, bootstrap and local tests with pinned Bun
         shell: bash
