@@ -5,7 +5,8 @@ export const minimumWalletOpeningTests = 32;
 export const minimumWagerInfrastructureTests = 9;
 export const minimumWagerIdentityTests = 32;
 export const minimumBetProcessingTests = 31;
-export const minimumPostgresTests = minimumPersistenceTests + minimumWalletOpeningTests + minimumWagerInfrastructureTests + minimumWagerIdentityTests + minimumBetProcessingTests;
+export const minimumWinLossProcessingTests = 41;
+export const minimumPostgresTests = minimumPersistenceTests + minimumWalletOpeningTests + minimumWagerInfrastructureTests + minimumWagerIdentityTests + minimumBetProcessingTests + minimumWinLossProcessingTests;
 
 export function assertPostgresReport(xml: string): void {
   const root = xml.match(/<testsuites\b([^>]*)>/)?.[1];
@@ -26,6 +27,7 @@ export function assertPostgresReport(xml: string): void {
     ['wager-processing', minimumWagerInfrastructureTests],
     ['wager-identity', minimumWagerIdentityTests],
     ['bet-processing', minimumBetProcessingTests],
+    ['win-loss-processing', minimumWinLossProcessingTests],
   ] as const) {
     const path = new RegExp(`\\bfile="[^"]*\\/${file}\\.test\\.(?:js|ts)"`);
     const executed = cases.filter(attributes => path.test(attributes)

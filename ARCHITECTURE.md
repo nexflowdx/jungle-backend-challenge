@@ -1,8 +1,8 @@
-# Arquitetura até o incremento 5.3 (integração nova pendente)
+# Arquitetura até o incremento 5.4 (integração nova pendente)
 
 Monólito modular NestJS: `WalletsModule`, `WageringModule`, `MessagingModule` e
 `OperationsModule`. O caso de uso de abertura está implementado em Wallets;
-`ProcessWagerTransaction` processa BET sem referência. WIN, LOSS, REFUND, ROLLBACK,
+`ProcessWagerTransaction` processa BET, WIN e LOSS sem referência. REFUND, ROLLBACK,
 referências e entradas HTTP/SQS continuam nos próximos incrementos.
 As camadas serão adicionadas conforme seus casos de uso, preservando o domínio
 em TypeScript puro, sem decorators ou dependências de NestJS/ORM.
@@ -116,7 +116,8 @@ of Work. Testes locais verificam metadados, SQL gerado e snapshots sem conectar
 ao banco. O desenvolvedor confirmou a aprovação das regressões do Marco 3 no
 Actions com PostgreSQL real. Os Marcos 3 e 4 foram validados nesse ambiente,
 conforme confirmação do desenvolvedor, assim como os 128 testes até 5.2.
-A integração nova do incremento 5.3 está pendente.
+Os 159 testes até 5.3 também foram validados no Actions, conforme confirmação do
+desenvolvedor. Os novos casos de 5.4 ainda dependem de execução nesse ambiente.
 
 Quatro migrations reversíveis criam Wallet/transações, ledger, correspondência
 financeira e Inbox/Outbox. CHECKs impedem escala excedente, valores especiais,
@@ -151,10 +152,10 @@ compatibilidade com `exactOptionalPropertyTypes`; não altera o runtime. `strict
 17.12 aprovado, em tmpfs/rede interna sem portas publicadas. Seu runner recusa
 outros hosts, bancos e ambientes. A suíte cobre migrations up/down/up, SQL inválido,
 precisão, concorrência de escritores, privilégios e rollback financeiro com
-Inbox/Outbox, abertura atômica, infraestrutura transacional, identidade e BET. Testes locais pulam as cinco suítes
+Inbox/Outbox, abertura atômica, infraestrutura transacional, identidade, BET, WIN e LOSS. Testes locais pulam as seis suítes
 PostgreSQL. Não se executa Docker na VPS. O runner exige relatório JUnit com pelo
-menos 159 casos reais: 55 de persistência, 32 de abertura, 9 de infraestrutura de 5.1,
-32 de identidade e 31 de BET. Cada arquivo deve atingir
+menos 200 casos reais: 55 de persistência, 32 de abertura, 9 de infraestrutura de 5.1,
+32 de identidade, 31 de BET e 41 de WIN/LOSS. Cada arquivo deve atingir
 seu mínimo com assertivas; hooks não contam. Skips, falhas, relatório ausente ou
 indisponibilidade do banco falham o job. A contagem local de skips inclui hooks.
 
@@ -196,8 +197,8 @@ os Marcos 3 e 4 foram validados no Actions, conforme confirmação do desenvolve
 
 ## Estrutura de processamento — incremento 5.1
 
-No incremento 5.1, `ProcessWagerTransaction` apenas recusava operações. Em 5.3,
-essa proteção permanece para tipos diferentes de BET e para BET com referência,
+No incremento 5.1, `ProcessWagerTransaction` apenas recusava operações. Em 5.4,
+essa proteção permanece para REFUND, ROLLBACK, OPENING e qualquer operação com referência,
 antes de qualquer acesso ao banco. OPENING continua exclusiva da abertura.
 
 `WagerProcessingUnitOfWork` prepara a fronteira para os próximos incrementos:
@@ -275,8 +276,9 @@ Se não encontrar vencedor, preserva o erro em vez de inventar uma decisão.
 Não existe reserva com commit próprio. As fixtures PENDING de 5.2 continuam
 controladas e não constituem aceite público. Em 5.3, ProcessWagerTransaction
 bloqueia a wallet antes de resolver a identidade e persiste o resultado financeiro
-na mesma transação. Replays de BET usam o snapshot terminal persistido; o restante
-dos tipos e a evolução de PENDING_REFERENCE continuam nos próximos incrementos.
+na mesma transação. Em 5.4, WIN e LOSS usam a mesma fronteira. Replays das três
+operações usam o snapshot terminal persistido; reversões e a evolução de
+PENDING_REFERENCE continuam nos próximos incrementos.
 
 Os 32 casos PostgreSQL novos usam conexões reais, barreiras e observação de espera
 por lock no servidor para disputas de identidade. Cobrem leitura da própria
@@ -322,6 +324,43 @@ seus recorders não substituem PostgreSQL. Os 31 casos novos de integração usa
 real, lock observado no servidor e falhas após cada gravação, incluindo erro diferido
 no commit e colisão real de outbox. Também cobrem disputas de saldo, duplicatas,
 reinício do cliente, wallets independentes, BRL/USD, precisão e reconstrução do saldo
-pelo ledger. Sua execução está pendente no workflow manual; o runner exige todos os
-159 casos, com assertivas e zero skips. O harness com três processos pertence ao
+pelo ledger. Seus 159 casos acumulados foram validados no Actions, conforme
+confirmação do desenvolvedor. O harness com três processos pertence ao
 Marco 6; referências, demais operações, HTTP e SQS não foram antecipados.
+
+
+## WIN e LOSS — incremento 5.4
+
+A extensão de ProcessWagerTransaction admite WIN e LOSS sem referência no mesmo
+fluxo de BET. Fingerprint, identidade persistente, lock pessimista por wallet,
+recuperação após UNIQUE, retentativas e contexto SQL permanecem compartilhados.
+A aplicação continua delegando todas as decisões monetárias ao domínio existente;
+OpenWallet, domínio, migrations e o processamento de BET não foram modificados.
+No adapter compartilhado, apenas a mensagem de erro de conclusão deixou de citar BET.
+
+WIN positiva credita Money exato, incrementa a versão e persiste PROCESSED, um
+lançamento CREDIT, WagerTransactionProcessed e WalletBalanceChanged na mesma
+transação. Zero, negativo ou escala inválida são recusados antes do banco.
+Excesso do limite monetário e moeda incompatível produzem REJECTED conforme o
+domínio, preservando saldo, versão e ledger e gravando WagerTransactionRejected.
+
+LOSS admite valor zero ou positivo. Persiste PROCESSED e o snapshot do saldo sob
+o lock, sem chamar saveWallet ou insertLedgerEntry: saldo, versão e updatedAt
+permanecem intactos. Emite somente WagerTransactionProcessed. A validação de moeda
+e identidade do domínio também se aplica a LOSS; uma rejeição não altera saldo.
+Nenhuma operação publica externamente; a outbox só é persistida antes do commit.
+
+Replay de WIN/LOSS PROCESSED ou REJECTED usa o resultado histórico sem novo efeito
+ou evento, inclusive depois de uma BET posterior ou reinício do cliente. Fixtures
+PENDING nunca são apresentadas como sucesso. WIN e LOSS com referência continuam
+explicitamente indisponíveis antes de abrir transação, sem PENDING_REFERENCE.
+
+Os 21 casos unitários novos verificam orquestração, validações, eventos, replay e
+retentativas com o domínio real. Os 41 casos PostgreSQL novos cobrem precisão acima
+do limite seguro de number, BRL/USD, limite monetário, LOSS sem movimento, replay,
+duplicatas e créditos distintos concorrentes, isolamento entre wallets, espera real
+pelo lock, rollback após cada escrita e falhas SQL de outbox e commit diferido.
+A integração nova ainda não foi executada: o workflow exclusivamente manual exige
+agora os 200 casos com assertivas e zero skips, preservando os 159 anteriores.
+O harness de múltiplos processos, referências e as operações posteriores permanecem
+pendentes dos respectivos incrementos.

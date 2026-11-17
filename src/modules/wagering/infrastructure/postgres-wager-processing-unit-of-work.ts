@@ -52,7 +52,7 @@ export class PostgresWagerProcessingUnitOfWork extends WagerProcessingUnitOfWork
             completeTransaction: transaction => operation(async () => {
               requireWallet(transaction.walletId);
               if (transaction.status !== WagerTransactionStatus.Processed && transaction.status !== WagerTransactionStatus.Rejected) {
-                throw new Error('BET completion requires a processed or rejected result');
+                throw new Error('Completion requires a processed or rejected result');
               }
               const record = await manager.findOneOrFail(WagerTransactionRecord, { id: transaction.id, walletId: lockedWalletId! });
               if (record.status !== WagerTransactionStatus.Pending) throw new Error('Only a pending transaction can complete');

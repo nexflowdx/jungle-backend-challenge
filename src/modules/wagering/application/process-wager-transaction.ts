@@ -9,12 +9,13 @@ import { WagerRequestFingerprint, type WagerIdentityRequest } from './wager-requ
 import { WagerIdentityCollisionError, WagerTransactionIdentity } from './wager-transaction-identity';
 import { WagerProcessingRetryableError, WagerProcessingUnitOfWork } from './wager-processing-unit-of-work';
 
-export interface BetCommand extends WagerIdentityRequest {
-  readonly kind: Kind.Bet;
+export interface SupportedWagerCommand extends WagerIdentityRequest {
+  readonly kind: Kind.Bet | Kind.Win | Kind.Loss;
   readonly correlationId: string;
   readonly causationId?: string;
 }
-export type ProcessWagerTransactionCommand = BetCommand | { readonly walletId: string; readonly kind: Exclude<Kind, Kind.Bet> };
+export interface BetCommand extends SupportedWagerCommand { readonly kind: Kind.Bet; }
+export type ProcessWagerTransactionCommand = SupportedWagerCommand | { readonly walletId: string; readonly kind: Exclude<Kind, Kind.Bet | Kind.Win | Kind.Loss> };
 
 export interface ProcessWagerTransactionResult {
   readonly transactionId: string;
@@ -34,7 +35,7 @@ export class WagerProcessingNotImplementedError extends Error {
 }
 export class WagerResultUnavailableError extends Error {
   readonly code = 'WAGER_RESULT_NOT_AVAILABLE';
-  constructor() { super('No completed BET result is available'); this.name = 'WagerResultUnavailableError'; }
+  constructor() { super('No completed wager result is available'); this.name = 'WagerResultUnavailableError'; }
 }
 export class WagerWalletNotFoundError extends Error {
   readonly code = 'WALLET_NOT_FOUND';
@@ -52,7 +53,7 @@ export class ProcessWagerTransaction {
   ) {}
 
   async execute(command: ProcessWagerTransactionCommand): Promise<ProcessWagerTransactionResult> {
-    if (command.kind !== Kind.Bet || command.referenceExternalTransactionId !== undefined) {
+    if ((command.kind !== Kind.Bet && command.kind !== Kind.Win && command.kind !== Kind.Loss) || command.referenceExternalTransactionId !== undefined) {
       throw new WagerProcessingNotImplementedError(command.kind);
     }
     assertIdentifier(command.correlationId);
@@ -99,7 +100,7 @@ export class ProcessWagerTransaction {
   }
 
   private result(transaction: WagerTransaction | undefined, replay: boolean): ProcessWagerTransactionResult {
-    if (!transaction || transaction.kind !== Kind.Bet || !transaction.balance || !transaction.completedAt
+    if (!transaction || (transaction.kind !== Kind.Bet && transaction.kind !== Kind.Win && transaction.kind !== Kind.Loss) || !transaction.balance || !transaction.completedAt
       || (transaction.status !== Status.Processed && transaction.status !== Status.Rejected)
       || (transaction.status === Status.Rejected && !transaction.failureCode)) throw new WagerResultUnavailableError();
     return Object.freeze({ transactionId: transaction.id, status: transaction.status,
