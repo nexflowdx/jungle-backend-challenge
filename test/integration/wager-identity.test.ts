@@ -337,9 +337,9 @@ describe.skipIf(!enabled)('Persistent wager identity PostgreSQL integration (5.2
     await unchanged(target);
   });
 
-  test('the public ProcessWagerTransaction never registers a PENDING reservation', async () => {
+  test('an unsupported public operation never registers a PENDING reservation', async () => {
     const target = await wallet();
-    await expect(new ProcessWagerTransaction(work()).execute({ walletId: target.id, kind: Kind.Bet }))
+    await expect(new ProcessWagerTransaction(work()).execute({ walletId: target.id, kind: Kind.Win }))
       .rejects.toBeInstanceOf(WagerProcessingNotImplementedError);
     expect(await fresh().count(WagerTransactionRecord, { walletId: target.id })).toBe(0);
     await unchanged(target);

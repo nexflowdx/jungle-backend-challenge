@@ -7,6 +7,14 @@ import { WagerTransactionKind as Kind, WagerTransactionStatus as Status } from '
 
 const at = new Date('2026-11-17T12:00:00.000Z');
 const identity = new WagerTransactionIdentity();
+const unusedFinancial = {
+  lockWallet: async () => { throw new Error('Identity classification must not lock wallets'); },
+  loadTransaction: async () => { throw new Error('Identity classification must not load results'); },
+  saveWallet: async () => { throw new Error('Identity classification must not change wallets'); },
+  completeTransaction: async () => { throw new Error('Identity classification must not complete transactions'); },
+  insertLedgerEntry: async () => { throw new Error('Identity classification must not write ledger'); },
+  insertEvents: async () => { throw new Error('Identity classification must not emit events'); },
+};
 let sequence = 0;
 function candidate(overrides: Partial<WagerIdentityRequest> = {}): WagerTransaction {
   return identity.createCandidate({ providerId: 'provider', externalTransactionId: 'external', idempotencyKey: 'key',
@@ -17,6 +25,7 @@ function persistence(rows: WagerTransaction[] = []) {
   let reads = 0;
   let writes = 0;
   const scope: WagerProcessingTransaction = {
+    ...unusedFinancial,
     findIdentityCandidates: async key => {
       reads++;
       return rows.filter(row => row.idempotencyKey === key.idempotencyKey
@@ -119,6 +128,7 @@ describe('wager identity classification only (5.2)', () => {
   test.each(['find', 'insert'])('propagates %s errors to the owner of the transaction', async point => {
     const failure = new Error('persistence failed');
     const scope: WagerProcessingTransaction = {
+      ...unusedFinancial,
       findIdentityCandidates: async () => { if (point === 'find') throw failure; return []; },
       insertPending: async () => { throw failure; },
     };

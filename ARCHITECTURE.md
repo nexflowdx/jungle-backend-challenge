@@ -1,9 +1,9 @@
-# Arquitetura até o incremento 5.2 (integração nova pendente)
+# Arquitetura até o incremento 5.3 (integração nova pendente)
 
 Monólito modular NestJS: `WalletsModule`, `WageringModule`, `MessagingModule` e
 `OperationsModule`. O caso de uso de abertura está implementado em Wallets;
-`ProcessWagerTransaction` possui apenas uma estrutura que recusa operações
-indisponíveis. Processamento financeiro e entradas HTTP/SQS continuam nos próximos marcos.
+`ProcessWagerTransaction` processa BET sem referência. WIN, LOSS, REFUND, ROLLBACK,
+referências e entradas HTTP/SQS continuam nos próximos incrementos.
 As camadas serão adicionadas conforme seus casos de uso, preservando o domínio
 em TypeScript puro, sem decorators ou dependências de NestJS/ORM.
 
@@ -115,8 +115,8 @@ para corresponder às migrations, preservando `mapToPk` e as dependências da Un
 of Work. Testes locais verificam metadados, SQL gerado e snapshots sem conectar
 ao banco. O desenvolvedor confirmou a aprovação das regressões do Marco 3 no
 Actions com PostgreSQL real. Os Marcos 3 e 4 foram validados nesse ambiente,
-conforme confirmação do desenvolvedor, assim como os 96 testes até 5.1.
-A integração nova do incremento 5.2 está pendente.
+conforme confirmação do desenvolvedor, assim como os 128 testes até 5.2.
+A integração nova do incremento 5.3 está pendente.
 
 Quatro migrations reversíveis criam Wallet/transações, ledger, correspondência
 financeira e Inbox/Outbox. CHECKs impedem escala excedente, valores especiais,
@@ -151,10 +151,10 @@ compatibilidade com `exactOptionalPropertyTypes`; não altera o runtime. `strict
 17.12 aprovado, em tmpfs/rede interna sem portas publicadas. Seu runner recusa
 outros hosts, bancos e ambientes. A suíte cobre migrations up/down/up, SQL inválido,
 precisão, concorrência de escritores, privilégios e rollback financeiro com
-Inbox/Outbox, abertura atômica, infraestrutura transacional e identidade. Testes locais pulam as quatro suítes
+Inbox/Outbox, abertura atômica, infraestrutura transacional, identidade e BET. Testes locais pulam as cinco suítes
 PostgreSQL. Não se executa Docker na VPS. O runner exige relatório JUnit com pelo
-menos 128 casos reais: 55 de persistência, 32 de abertura, 9 de infraestrutura de 5.1
-e 32 de identidade. Cada arquivo deve atingir
+menos 159 casos reais: 55 de persistência, 32 de abertura, 9 de infraestrutura de 5.1,
+32 de identidade e 31 de BET. Cada arquivo deve atingir
 seu mínimo com assertivas; hooks não contam. Skips, falhas, relatório ausente ou
 indisponibilidade do banco falham o job. A contagem local de skips inclui hooks.
 
@@ -196,11 +196,9 @@ os Marcos 3 e 4 foram validados no Actions, conforme confirmação do desenvolve
 
 ## Estrutura de processamento — incremento 5.1
 
-`ProcessWagerTransaction` recebe um comando interno provisório com wallet e tipo
-e lança imediatamente `WagerProcessingNotImplementedError`. O retorno é
-`Promise<never>`: não há resultado financeiro, aceite pendente, criação de registro
-nem chamada à porta transacional. Isso também se aplica a OPENING, que continua
-exclusiva do caso de uso de abertura. Não são executadas regras de apostas do domínio.
+No incremento 5.1, `ProcessWagerTransaction` apenas recusava operações. Em 5.3,
+essa proteção permanece para tipos diferentes de BET e para BET com referência,
+antes de qualquer acesso ao banco. OPENING continua exclusiva da abertura.
 
 `WagerProcessingUnitOfWork` prepara a fronteira para os próximos incrementos:
 seu callback não recebe EntityManager nem tipos do ORM. `WageringModule.register`
@@ -274,19 +272,56 @@ PK, FK, outros erros SQL, erros genéricos, deadlocks e timeouts propagam sem
 classificação de conflito, resultado fictício, status FAILED ou aceite pendente.
 Se não encontrar vencedor, preserva o erro em vez de inventar uma decisão.
 
-Não existe caso de uso de reserva com commit próprio. ProcessWagerTransaction
-continua recusando operações indisponíveis antes de acessar o banco, e não chama
-o resolvedor de identidade. PENDING confirmado neste incremento existe apenas nas
-fixtures controladas de integração; não constitui aceite pelo fluxo público.
-Em 5.3, o chamador poderá bloquear a wallet antes de resolver a identidade e
-persistir o efeito financeiro na mesma transação. Replay de saldo histórico,
-respostas terminais e evolução de PENDING_REFERENCE ainda não estão implementados.
+Não existe reserva com commit próprio. As fixtures PENDING de 5.2 continuam
+controladas e não constituem aceite público. Em 5.3, ProcessWagerTransaction
+bloqueia a wallet antes de resolver a identidade e persiste o resultado financeiro
+na mesma transação. Replays de BET usam o snapshot terminal persistido; o restante
+dos tipos e a evolução de PENDING_REFERENCE continuam nos próximos incrementos.
 
 Os 32 casos PostgreSQL novos usam conexões reais, barreiras e observação de espera
 por lock no servidor para disputas de identidade. Cobrem leitura da própria
 inserção, invisibilidade externa, rollback, recuperação em nova sessão, reinício
 do cliente, identidades cruzadas, wallets distintas e lock_timeout local ao teste.
-Nenhum débito, crédito, ledger ou evento financeiro é produzido. Sua execução
-real permanece pendente de autorização no workflow manual; os 96 casos anteriores
-foram preservados. OpenWallet, domínio financeiro, migrations e configurações de
-infraestrutura permanecem intactos.
+Esses testes de identidade não produzem efeitos financeiros. Seus 128 casos
+acumulados foram validados no Actions conforme confirmação do desenvolvedor.
+OpenWallet, domínio financeiro, migrations e infraestrutura permanecem intactos.
+
+## Processamento de BET — incremento 5.3
+
+O comando de BET contém os campos usados pelo fingerprint e contexto de correlação.
+A entrada é normalizada antes da transação. Cada tentativa cria uma candidata nova,
+bloqueia uma única wallet com PESSIMISTIC_WRITE (`FOR UPDATE`), resolve a identidade
+e chama o comportamento existente de WagerTransaction, que decide débito ou rejeição.
+Não há cálculo monetário na aplicação ou no adapter. Saldo insuficiente preserva
+saldo, versão e ledger e grava a rejeição com INSUFFICIENT_FUNDS.
+
+A porta fornece lockWallet, loadTransaction, saveWallet, completeTransaction,
+insertLedgerEntry e insertEvents no mesmo contexto SQL de 5.2. Escritas financeiras
+exigem a wallet bloqueada. saveWallet também condiciona UPDATE à versão carregada;
+completeTransaction atualiza somente uma operação PENDING. Abertura e migrations
+não foram alteradas. Identidade, débito, versão, resultado, ledger e eventos são
+confirmados juntos. Rejeição grava resultado e WagerTransactionRejected sem atualizar
+a wallet ou criar ledger. BET aprovada grava WagerTransactionProcessed e
+WalletBalanceChanged. A outbox apenas persiste envelopes; não há publicação externa.
+
+O retorno só resolve após commit. Replay de BET PROCESSED ou REJECTED devolve ID,
+status, failureCode quando aplicável e saldo histórico, sem gerar movimento ou evento.
+Uma candidata repetida que encontre fixture PENDING não é debitada nem apresentada
+como sucesso: retorna WagerResultUnavailableError. O caso de uso não confirma PENDING.
+Carteira inexistente produz WALLET_NOT_FOUND sem identidade persistida. A rejeição
+de moeda usa a regra já existente do domínio e preserva a moeda do saldo observado.
+
+Colisão de UNIQUE continua exigindo rollback antes da consulta de identidade em
+nova transação. Somente a identidade compatível permite carregar o resultado.
+Deadlock e falha de serialização reconhecidos pelo driver (40P01/40001) permitem
+até três tentativas completas, com objetos novos e backoff com jitter. Timeouts e
+falhas genéricas propagam sem falso resultado financeiro ou marcação FAILED.
+
+Os testes unitários verificam orquestração, erros, snapshots e limite de retentativas;
+seus recorders não substituem PostgreSQL. Os 31 casos novos de integração usam banco
+real, lock observado no servidor e falhas após cada gravação, incluindo erro diferido
+no commit e colisão real de outbox. Também cobrem disputas de saldo, duplicatas,
+reinício do cliente, wallets independentes, BRL/USD, precisão e reconstrução do saldo
+pelo ledger. Sua execução está pendente no workflow manual; o runner exige todos os
+159 casos, com assertivas e zero skips. O harness com três processos pertence ao
+Marco 6; referências, demais operações, HTTP e SQS não foram antecipados.

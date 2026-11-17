@@ -11,7 +11,7 @@ export class WageringModule {
       providers: [
         { provide: WagerTransactionIdentity, useFactory: () => new WagerTransactionIdentity() },
         { provide: WagerProcessingUnitOfWork, useValue: unitOfWork },
-        { provide: ProcessWagerTransaction, useFactory: (work: WagerProcessingUnitOfWork) => new ProcessWagerTransaction(work), inject: [WagerProcessingUnitOfWork] },
+        { provide: ProcessWagerTransaction, useFactory: (work: WagerProcessingUnitOfWork, identity: WagerTransactionIdentity) => new ProcessWagerTransaction(work, identity), inject: [WagerProcessingUnitOfWork, WagerTransactionIdentity] },
       ],
       exports: [ProcessWagerTransaction, WagerTransactionIdentity],
     };
