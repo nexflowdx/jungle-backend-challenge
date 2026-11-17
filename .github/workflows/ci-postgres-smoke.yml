@@ -1,0 +1,101 @@
+name: CI PostgreSQL Smoke
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  postgres-smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      POSTGRES_IMAGE: postgres:17.12-bookworm
+      POSTGRES_CONTAINER: postgres-smoke-${{ github.run_id }}-${{ github.run_attempt }}
+      POSTGRES_USER: smoke
+      POSTGRES_DB: smoke
+    steps:
+      - name: Generate temporary password
+        shell: bash
+        run: |
+          set +x
+          set -euo pipefail
+          postgres_password="$(openssl rand -hex 32)"
+          printf '::add-mask::%s\n' "${postgres_password}"
+          printf 'POSTGRES_PASSWORD=%s\n' "${postgres_password}" >> "${GITHUB_ENV}"
+
+      - name: Pull and start PostgreSQL and wait for TCP readiness
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Bound image download, container creation and health polling together, including blocked Docker calls.
+          timeout --signal=KILL 120s bash -euo pipefail <<'BASH'
+          docker pull "${POSTGRES_IMAGE}"
+          docker run --detach \
+            --name "${POSTGRES_CONTAINER}" \
+            --env POSTGRES_USER \
+            --env POSTGRES_DB \
+            --env POSTGRES_PASSWORD \
+            --env POSTGRES_HOST_AUTH_METHOD=scram-sha-256 \
+            --health-cmd 'pg_isready -h 127.0.0.1 -p 5432 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -t 2' \
+            --health-interval 2s \
+            --health-timeout 3s \
+            --health-retries 60 \
+            "${POSTGRES_IMAGE}"
+
+          while true; do
+            health_status="$(docker inspect --format '{{.State.Health.Status}}' "${POSTGRES_CONTAINER}")"
+            case "${health_status}" in
+              healthy) break ;;
+              unhealthy)
+                echo '::error::PostgreSQL container is unhealthy.'
+                exit 1
+                ;;
+            esac
+            sleep 1
+          done
+          BASH
+
+      - name: Verify authenticated SELECT 1 over TCP
+        shell: bash
+        run: |
+          set +x
+          set -euo pipefail
+          query_result="$(
+            PGPASSWORD="${POSTGRES_PASSWORD}" timeout --signal=KILL 15s \
+              docker exec --env PGPASSWORD --env PGCONNECT_TIMEOUT=5 \
+              --env PGOPTIONS='-c statement_timeout=5000' \
+              "${POSTGRES_CONTAINER}" \
+              psql -X --no-password --host=127.0.0.1 --port=5432 \
+                --username="${POSTGRES_USER}" --dbname="${POSTGRES_DB}" \
+                --set=ON_ERROR_STOP=1 --tuples-only --no-align --command='SELECT 1;'
+          )"
+          if [[ "${query_result}" != '1' ]]; then
+            echo '::error::SELECT 1 did not return exactly 1.'
+            exit 1
+          fi
+          echo 'PostgreSQL authenticated smoke test passed.'
+
+      - name: Diagnose PostgreSQL failure
+        if: ${{ failure() }}
+        shell: bash
+        run: |
+          set +x
+          set -euo pipefail
+          timeout --signal=KILL 10s bash -euo pipefail <<'BASH' || true
+          if docker inspect --format 'status={{.State.Status}} health={{.State.Health.Status}}' "${POSTGRES_CONTAINER}"; then
+            docker logs --tail 50 "${POSTGRES_CONTAINER}" 2>&1 |
+              while IFS= read -r log_line || [[ -n "${log_line}" ]]; do
+                printf '%s\n' "${log_line//${POSTGRES_PASSWORD}/[REDACTED]}"
+              done
+          fi
+          BASH
+
+      - name: Remove PostgreSQL container
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if docker inspect "${POSTGRES_CONTAINER}" > /dev/null 2>&1; then
+            timeout --signal=KILL 15s docker rm --force --volumes "${POSTGRES_CONTAINER}"
+          fi
