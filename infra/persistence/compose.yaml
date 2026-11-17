@@ -1,0 +1,33 @@
+services:
+  postgres:
+    # Reuse the approved image, tmpfs, healthcheck and isolation from milestone zero.
+    extends:
+      file: ../../experiments/compatibility-03/compose.yaml
+      service: postgres
+    environment:
+      POSTGRES_DB: jungle_persistence_test
+
+  persistence-tests:
+    build:
+      context: ../..
+      dockerfile: infra/persistence/Dockerfile
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs: [/tmp]
+    environment:
+      GITHUB_ACTIONS: ${GITHUB_ACTIONS:?GitHub Actions execution required}
+      PERSISTENCE_TEST_CONTAINER: '1'
+      PGHOST: postgres
+      PGDATABASE: jungle_persistence_test
+      PGUSER: diagnostic
+      PGPASSWORD: ${DIAGNOSTIC_DB_PASSWORD:?temporary diagnostic password required}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks: [diagnostic]
+
+networks:
+  diagnostic:
+    driver: bridge
+    internal: true

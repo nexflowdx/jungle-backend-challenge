@@ -15,9 +15,13 @@
     "bootstrap": "bun dist/main.js --bootstrap-only",
     "test": "tsc -p tsconfig.test.json && bun test ./.test-dist/test",
     "test:unit": "tsc -p tsconfig.test.json && bun test ./.test-dist/test/unit",
+    "test:integration": "tsc -p tsconfig.test.json && bun scripts/run-persistence-integration.ts",
     "check": "bun run --bun typecheck && bun run --bun build && bun run bootstrap && bun run --bun test"
   },
   "dependencies": {
+    "@mikro-orm/core": "6.6.18",
+    "@mikro-orm/migrations": "6.6.18",
+    "@mikro-orm/postgresql": "6.6.18",
     "@nestjs/common": "11.2.10",
     "@nestjs/core": "11.2.10",
     "@nestjs/platform-express": "11.2.10",
@@ -28,5 +32,8 @@
     "@types/bun": "1.4.4",
     "@types/node": "26.2.0",
     "typescript": "5.9.3"
+  },
+  "patchedDependencies": {
+    "@mikro-orm/core@6.6.18": "patches/@mikro-orm%2Fcore@6.6.18.patch"
   }
 }

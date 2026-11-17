@@ -1,0 +1,10 @@
+.git
+node_modules
+.bun-cache
+.tmp
+dist
+.test-dist
+.env
+.env.*
+AGENTS.md
+PLANO_REVISADO1.md

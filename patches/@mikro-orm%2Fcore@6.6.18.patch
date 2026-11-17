@@ -1,0 +1,13 @@
+diff --git a/typings.d.ts b/typings.d.ts
+index 6d18920d414f262d7043fd6d5c2f8560fae77e6f..7071b8d2f45f27f5dff2d86c317307db4a81fa0e 100644
+--- a/typings.d.ts
++++ b/typings.d.ts
+@@ -74,7 +74,7 @@ export declare namespace DefineConfig {
+ }
+ export type CleanTypeConfig<T> = Compute<Pick<T, Extract<keyof T, keyof TypeConfig>>>;
+ export interface TypeConfig {
+-    forceObject?: boolean;
++    forceObject?: boolean | undefined;
+ }
+ export type UnwrapPrimary<T> = T extends Scalar ? T : T extends Reference<infer U> ? Primary<U> : Primary<T>;
+ type PrimaryPropToType<T, Keys extends (keyof T)[]> = {
