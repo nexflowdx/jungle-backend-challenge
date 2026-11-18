@@ -2,25 +2,15 @@ import { assertSqsTestEnvironment } from '../test/helpers/sqs-test-environment';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { assertPostgresReport } from './integration-report';
+import { assertPostgresReport, requiredIntegrationSuites } from './integration-report';
 
 async function main(): Promise<void> {
   assertSqsTestEnvironment(process.env);
   const directory = await mkdtemp(join(tmpdir(), 'jungle-postgres-report-'));
   try {
     const report = join(directory, 'results.xml');
-    const child = Bun.spawn([process.execPath, 'test', './.test-dist/test/integration/postgres.test.js',
-      './.test-dist/test/integration/wallet-opening.test.js',
-      './.test-dist/test/integration/wager-processing.test.js',
-      './.test-dist/test/integration/wager-identity.test.js',
-      './.test-dist/test/integration/bet-processing.test.js',
-      './.test-dist/test/integration/win-loss-processing.test.js',
-      './.test-dist/test/integration/reference-processing.test.js',
-      './.test-dist/test/integration/reversal-processing.test.js',
-      './.test-dist/test/integration/http-api.test.js',
-      './.test-dist/test/integration/wager-atomicity.test.js',
-      './.test-dist/test/integration/wager-multiprocess.test.js',
-      './.test-dist/test/integration/sqs-inbox.test.js',
+    const child = Bun.spawn([process.execPath, 'test',
+      ...requiredIntegrationSuites.map(([file]) => `./.test-dist/test/integration/${file}.test.js`),
       '--timeout=10000', '--reporter=junit', `--reporter-outfile=${report}`], {
       env: { ...process.env, PERSISTENCE_INTEGRATION: '1' }, stdout: 'inherit', stderr: 'inherit',
     });

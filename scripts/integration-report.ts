@@ -12,7 +12,19 @@ export const minimumHttpApiTests = 5;
 export const minimumWagerAtomicityTests = 6;
 export const minimumWagerMultiprocessTests = 10;
 export const minimumSqsInboxTests = 17;
-export const minimumPostgresTests = minimumPersistenceTests + minimumWalletOpeningTests + minimumWagerInfrastructureTests + minimumWagerIdentityTests + minimumBetProcessingTests + minimumWinLossProcessingTests + minimumReferenceProcessingTests + minimumReversalProcessingTests + minimumHttpApiTests + minimumWagerAtomicityTests + minimumWagerMultiprocessTests + minimumSqsInboxTests;
+export const minimumSqsRetryDlqTests = 13;
+export const minimumSqsFinancialProtectionTests = 6;
+// Explicit manifest shared by execution and report validation; no filesystem/glob discovery.
+export const requiredIntegrationSuites = [
+  ['postgres', minimumPersistenceTests], ['wallet-opening', minimumWalletOpeningTests],
+  ['wager-processing', minimumWagerInfrastructureTests], ['wager-identity', minimumWagerIdentityTests],
+  ['bet-processing', minimumBetProcessingTests], ['win-loss-processing', minimumWinLossProcessingTests],
+  ['reference-processing', minimumReferenceProcessingTests], ['reversal-processing', minimumReversalProcessingTests],
+  ['http-api', minimumHttpApiTests], ['wager-atomicity', minimumWagerAtomicityTests],
+  ['wager-multiprocess', minimumWagerMultiprocessTests], ['sqs-inbox', minimumSqsInboxTests],
+  ['sqs-retry-dlq', minimumSqsRetryDlqTests], ['sqs-financial-protection', minimumSqsFinancialProtectionTests],
+] as const;
+export const minimumPostgresTests = requiredIntegrationSuites.reduce((total, [, minimum]) => total + minimum, 0);
 
 export function assertPostgresReport(xml: string): void {
   const root = xml.match(/<testsuites\b([^>]*)>/)?.[1];
@@ -28,19 +40,11 @@ export function assertPostgresReport(xml: string): void {
     throw new Error('PostgreSQL integration must execute all tests with assertions, zero skips and zero failures');
   }
   const cases = [...xml.matchAll(/<testcase\b([^>]*)>/g)].map(match => match[1]!);
-  for (const [file, minimum] of [
-    ['postgres', minimumPersistenceTests], ['wallet-opening', minimumWalletOpeningTests],
-    ['wager-processing', minimumWagerInfrastructureTests],
-    ['wager-identity', minimumWagerIdentityTests],
-    ['bet-processing', minimumBetProcessingTests],
-    ['win-loss-processing', minimumWinLossProcessingTests],
-    ['reference-processing', minimumReferenceProcessingTests],
-    ['reversal-processing', minimumReversalProcessingTests],
-    ['http-api', minimumHttpApiTests],
-    ['wager-atomicity', minimumWagerAtomicityTests],
-    ['wager-multiprocess', minimumWagerMultiprocessTests],
-    ['sqs-inbox', minimumSqsInboxTests],
-  ] as const) {
+  if (cases.some(attributes => !/\bname="\(unnamed\)"/.test(attributes)
+    && !(Number(attributes.match(/\bassertions="([0-9]+)"/)?.[1] ?? '0') > 0))) {
+    throw new Error('Every named integration testcase must include at least one assertion');
+  }
+  for (const [file, minimum] of requiredIntegrationSuites) {
     const path = new RegExp(`\\bfile="[^"]*\\/${file}\\.test\\.(?:js|ts)"`);
     const executed = cases.filter(attributes => path.test(attributes)
       && !/\bname="\(unnamed\)"/.test(attributes)

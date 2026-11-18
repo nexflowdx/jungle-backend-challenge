@@ -895,3 +895,50 @@ causa, falha original e estado de publicação (não tentada, incerta ou confirm
 Esses erros de transporte não podem ser convertidos em falha financeira ou FAILED.
 Os testes unitários usam respostas controladas e barreira de promessa para verificar
 a ordem dos comandos. Não substituem validação futura com SQS real/emulado.
+
+## 7.3.4 — Validação integrada de retry, DLQ e proteção financeira
+
+A suíte `sqs-retry-dlq` acrescenta 13 casos SQS: corpo bruto inválido, alteração
+real da visibilidade com redelivery natural, contagem até cinco recebimentos,
+publicação FIFO seguida de exclusão, perda/falha de publicação e de ACK por wrappers
+explícitos, deduplicação na janela FIFO, falha de visibilidade e bloqueio de redrive
+nativo com limites três e cinco. As filas são únicas por teste e excluídas em
+`finally`, sequencialmente, origem antes da DLQ. Falhas de limpeza não impedem
+as demais exclusões e preservam o erro original como causa e item do AggregateError.
+
+`sqs-financial-protection` acrescenta seis casos com PostgreSQL e MiniStack reais:
+PROCESSED (BET de 25.00 sobre 100.00), REJECTED (BET de 101.00 sem saldo suficiente)
+e PENDING_REFERENCE (WIN com referência ausente), cada qual após ACK falho e após
+perda simulada de resposta. O teste observa o resultado somente depois que o caso
+de uso real resolve após COMMIT. No cenário de perda, um wrapper lança depois dessa
+resolução; não interrompe a conexão PostgreSQL nem simula um COMMIT realmente ambíguo.
+O estado fornecido aos adaptadores continua explicitamente incerto, enquanto leituras
+independentes no banco estabelecem o resultado esperado pelo teste.
+
+Depois de cinco recebimentos reais, resultados persistidos ou incertos precisam
+retornar hold, sem comandos de retry, publicação ou exclusão. A DLQ é consultada
+para confirmar ausência de mensagens. O teste compara snapshots antes/depois do
+bloqueio e do replay por uma nova instância do handler: saldo, versão da wallet,
+transações, ledger, outbox e inbox concluída permanecem intactos. A soma do ledger
+reconstrói o saldo; rejeição e pendência não criam lançamento financeiro. O replay
+preserva inclusive o resultado pendente e permite ACK após a confirmação durável.
+Nenhum FAILED, worker ou consumidor novo foi introduzido.
+
+O runner anterior tinha uma lista explícita de arquivos, sem descoberta por glob.
+Agora ele e o validador JUnit compartilham um manifesto explícito de suítes e seus
+mínimos. Os 364 casos históricos e seus mínimos individuais foram preservados;
+os 13 casos SQS e seis financeiros elevam o mínimo obrigatório para 383. Cada arquivo
+precisa atingir seu próprio mínimo com casos nomeados e assertivas; aumentar o total
+de outro arquivo não substitui uma suíte ausente. Skips, falhas, erros e relatórios
+incompletos continuam bloqueando a aprovação. Testes unitários do relatório cobrem
+ausência das novas suítes, hooks sem nome e casos sem assertivas.
+
+Workflows, gatilhos manuais, limites e infraestrutura permanecem inalterados. Os novos
+casos são compilados localmente; serviços e execução integrada só são permitidos no
+runner isolado do Actions, mediante autorização. A imagem continua MiniStack 1.5.39
+com o digest existente. Incompatibilidades não recebem fallback para mocks ou skips.
+Não há validação declarada do fluxo integrado antes dessa execução. Permanecem fora
+da prova: falha real de conexão durante COMMIT, IAM da AWS, semântica integral de rede
+do SQS e deduplicação persistente além da janela FIFO de cinco minutos. Os wrappers
+de perda de resposta comprovam o comportamento conservador do cliente sob falhas
+controladas, sem substituir persistência e transporte reais no caminho principal.
