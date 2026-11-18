@@ -31,6 +31,7 @@ export const requiredIntegrationSuites = [
   ['outbox-confirmation', minimumOutboxConfirmationTests],
   ['outbox-retry', minimumOutboxRetryTests],
   ['sqs-outbox-publication', minimumSqsOutboxPublicationTests],
+  ['outbox-recovery', 1],
 ] as const;
 export const minimumPostgresTests = requiredIntegrationSuites.reduce((total, [, minimum]) => total + minimum, 0);
 

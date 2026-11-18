@@ -106,6 +106,26 @@ describe.skipIf(!enabled)('SQS outbox publication (real MiniStack)', () => {
         occurredAt: event.occurredAt.toISOString(),
         payload: event.payload,
       });
+
+      // Simulates a successful send followed by a lost database confirmation.
+      // A recovered publisher sends the same durable event identity again.
+      const repeated = await publisher.publish({
+        ...event,
+        attempts: 2,
+        leaseToken: randomUUID(),
+      });
+
+      expect(repeated.eventId).toBe(event.id);
+
+      const duplicate = await client.send(new ReceiveMessageCommand({
+        QueueUrl: queueUrl,
+        MaxNumberOfMessages: 1,
+        WaitTimeSeconds: 1,
+      }));
+
+      // FIFO suppresses the immediate duplicate; persistent consumer
+      // deduplication is still required outside the FIFO deduplication window.
+      expect(duplicate.Messages ?? []).toHaveLength(0);
     } finally {
       try {
         if (createdByTest) {

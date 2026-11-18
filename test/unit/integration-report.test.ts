@@ -84,8 +84,9 @@ test('manifest retains every historical per-file minimum and requires the outbox
     ['sqs-retry-dlq', 13], ['sqs-financial-protection', 6],
     ['outbox-reservation', 14], ['outbox-confirmation', 5], ['outbox-retry', 5],
     ['sqs-outbox-publication', 1],
+    ['outbox-recovery', 1],
   ]);
-  expect(minimumPostgresTests).toBe(408);
+  expect(minimumPostgresTests).toBe(409);
   expect(() => assertPostgresReport(report('', 364))).toThrow();
   expect(() => assertPostgresReport(report('', 383))).toThrow();
 });
