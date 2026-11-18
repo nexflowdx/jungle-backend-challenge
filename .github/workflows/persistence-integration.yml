@@ -60,6 +60,13 @@ jobs:
           set -euo pipefail
           timeout --signal=KILL 180s docker compose run --rm --no-deps -T persistence-tests
 
+      - name: Verify pending reference batch against disposable PostgreSQL
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout --signal=KILL 60s docker compose run --rm --no-deps -T \
+            persistence-tests bun scripts/run-pending-references.ts
+
       - name: Diagnose failure without credentials
         if: ${{ failure() && env.DIAGNOSTIC_DB_PASSWORD != '' }}
         shell: bash

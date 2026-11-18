@@ -26,6 +26,7 @@ services:
       SQS_ENDPOINT: http://ministack:4566
       AWS_EC2_METADATA_DISABLED: 'true'
       PGHOST: postgres
+      PGPORT: '5432'
       PGDATABASE: jungle_persistence_test
       PGUSER: diagnostic
       PGPASSWORD: ${DIAGNOSTIC_DB_PASSWORD:?temporary diagnostic password required}
