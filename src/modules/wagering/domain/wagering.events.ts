@@ -72,6 +72,18 @@ export class WagerTransactionPendingReference extends IntegrationEvent<WagerTran
   }
 }
 
+export class WagerTransactionFailed extends IntegrationEvent<WagerTransactionRejectedData> {
+  readonly eventType = 'WagerTransactionFailed';
+  readonly version = 1;
+  private constructor(props: IntegrationEventProps<WagerTransactionRejectedData>) { super(props); Object.freeze(this); }
+
+  static from(transaction: WagerTransaction, context: EventContext): WagerTransactionFailed {
+    const data = eventData(transaction, Status.Failed);
+    if (!transaction.failureCode) throw new DomainError('INVALID_TRANSACTION_EVENT', 'Failure requires a failure code');
+    return new WagerTransactionFailed({ ...context, aggregateId: transaction.walletId, data: { ...data, failureCode: transaction.failureCode } });
+  }
+}
+
 /** Builds values for the future outbox; never publishes. Contexts supply one stable identity per event. */
 export function createTransactionEvents(
   transaction: WagerTransaction, wallet: Wallet, entry: WalletLedgerEntry | undefined, context: () => EventContext,
@@ -86,6 +98,7 @@ export function createTransactionEvents(
   switch (transaction.status) {
     case Status.Processed: event = WagerTransactionProcessed.from(transaction, context()); break;
     case Status.Rejected: event = WagerTransactionRejected.from(transaction, context()); break;
+    case Status.Failed: event = WagerTransactionFailed.from(transaction, context()); break;
     case Status.PendingReference: event = WagerTransactionPendingReference.from(transaction, context()); break;
     default: throw new DomainError('INVALID_TRANSACTION_EVENT', 'No integration event defined for this state');
   }

@@ -136,7 +136,8 @@ export class PostgresWagerProcessingUnitOfWork extends WagerProcessingUnitOfWork
             completePendingReference: transaction => operation(async () => {
               requireWallet(transaction.walletId);
               if (transaction.status !== WagerTransactionStatus.Processed
-                && transaction.status !== WagerTransactionStatus.Rejected) {
+                && transaction.status !== WagerTransactionStatus.Rejected
+                && transaction.status !== WagerTransactionStatus.Failed) {
                 throw new Error('Pending reference must reach a terminal decision');
               }
               const record = await manager.findOneOrFail(WagerTransactionRecord, {

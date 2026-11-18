@@ -1011,3 +1011,33 @@ do publisher continuam para 8.2 e 8.3.
 Nenhuma validação integrada de 8.1 é declarada antes da execução autorizada no Actions
 com PostgreSQL real. Typecheck, compilação e unitários locais não demonstram a
 exclusividade de locks entre sessões nem a recuperação persistente após expiração.
+
+## Marco 8.5 — Expiração de referências pendentes
+
+O prazo é fixo em `createdAt + 24 horas`; `now >= deadlineAt` caracteriza expiração.
+Retentativas mantêm esse prazo, inclusive quando uma agenda antiga possui deadline
+calculado a partir da tentativa. A seleção PostgreSQL usa a data de criação para
+incluir expiradas mesmo com próxima tentativa futura ou deadline persistido nulo.
+O índice parcial existente continua disponível; nenhum campo ou migration é necessário.
+
+Sob os locks existentes de carteira e transação, a aplicação consulta novamente a
+referência e executa as regras do domínio. Se continuar pendente ao expirar
+(referência ausente ou ainda não processada), chama
+`fail(ReferenceNotFound, wallet.balance, at)`. Referências disponíveis continuam
+produzindo processamento ou rejeição conforme as regras existentes.
+
+A especificação explícita do Marco 8.5 determina `FAILED/REFERENCE_NOT_FOUND`,
+divergindo do `REJECTED` descrito no item 7.1 do README. A implementação segue essa
+especificação e grava `WagerTransactionFailed` com o contexto original na mesma
+transação SQL da conclusão, sem alteração da carteira nem ledger para a expiração.
+Falha da outbox reverte a conclusão; workers concorrentes observam a decisão após
+o lock e ignoram transações finalizadas. O contador `failed` do lote inclui tanto
+expirações concluídas quanto erros técnicos; apenas os últimos geram log de erro.
+O replay pelo worker é ignorado após conclusão. O contrato existente de
+`ProcessWagerTransaction` ainda não retorna `FAILED`: reenvios pelo fluxo de aceite
+produzem `WagerResultUnavailableError`, sem repetir efeitos financeiros.
+
+Os testes PostgreSQL acrescentam retentativas sem renovação, limite exato e posterior,
+referência disponível, snapshot final do saldo, rollback, dois workers com barreiras
+de lock e seleção com próxima tentativa futura. Sua validação exige execução no
+ambiente isolado PostgreSQL/SQS; testes locais não comprovam essas garantias SQL.

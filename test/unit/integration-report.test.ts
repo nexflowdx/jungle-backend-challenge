@@ -79,14 +79,14 @@ test.each([
 test('manifest retains every historical per-file minimum and requires the outbox reservation suite', () => {
   expect(requiredIntegrationSuites).toEqual([
     ['postgres', 55], ['wallet-opening', 32], ['wager-processing', 9], ['wager-identity', 32],
-    ['bet-processing', 31], ['win-loss-processing', 41], ['reference-processing', 36], ['reversal-processing', 90],
+    ['bet-processing', 31], ['win-loss-processing', 41], ['reference-processing', 43], ['reversal-processing', 90],
     ['http-api', 5], ['wager-atomicity', 6], ['wager-multiprocess', 10], ['sqs-inbox', 17],
     ['sqs-retry-dlq', 13], ['sqs-financial-protection', 6],
     ['outbox-reservation', 14], ['outbox-confirmation', 5], ['outbox-retry', 5],
     ['sqs-outbox-publication', 1],
     ['outbox-recovery', 1],
   ]);
-  expect(minimumPostgresTests).toBe(409);
+  expect(minimumPostgresTests).toBe(416);
   expect(() => assertPostgresReport(report('', 364))).toThrow();
   expect(() => assertPostgresReport(report('', 383))).toThrow();
 });

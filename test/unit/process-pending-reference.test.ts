@@ -8,7 +8,7 @@ import { Wallet } from '../../src/modules/wallets/domain/wallet';
 import { Money } from '../../src/shared/domain/money';
 
 import { WagerTransaction } from '../../src/modules/wagering/domain/wager-transaction';
-import { WagerTransactionKind as Kind, WagerTransactionStatus as Status } from '../../src/modules/wagering/domain/wager-transaction.types';
+import { FailureCode, WagerTransactionKind as Kind, WagerTransactionStatus as Status } from '../../src/modules/wagering/domain/wager-transaction.types';
 
 describe('ProcessPendingReference', () => {
   test('reschedules a missing reference without financial effects', async () => {
@@ -73,7 +73,7 @@ describe('ProcessPendingReference', () => {
     } as WagerProcessingUnitOfWork;
 
     const result = await new ProcessPendingReference(
-      unitOfWork, () => at, () => 'ledger-id',
+      unitOfWork, () => new Date(at.getTime() + 3_600_000), () => 'ledger-id',
     ).execute({ id: transaction.id, walletId: wallet.id });
 
     expect(result).toBe('rescheduled');
@@ -84,7 +84,7 @@ describe('ProcessPendingReference', () => {
     expect(scheduled).toEqual({
       id: 'pending-tx',
       attempts: 1,
-      next: new Date('2026-11-18T12:01:00Z'),
+      next: new Date('2026-11-18T13:01:00Z'),
       deadline: new Date('2026-11-19T12:00:00Z'),
     });
   });
@@ -130,6 +130,104 @@ describe('ProcessPendingReference', () => {
     expect(result).toBe('skipped');
     expect(calls).toEqual(['lock', 'load']);
     expect(wallet.balance.toString()).toBe('100.00');
+  });
+});
+
+describe('Pending reference expiration (8.5)', () => {
+  const createdAt = new Date('2026-11-18T12:00:00Z');
+  const deadlineAt = new Date('2026-11-19T12:00:00Z');
+
+  function setup(offset: number, referenceState: 'missing' | 'processed' | 'rejected' | 'pending' = 'missing') {
+    const at = new Date(deadlineAt.getTime() + offset);
+    const wallet = Wallet.open({
+      id: 'wallet', playerId: 'player', at: createdAt,
+      initialBalance: Money.from({ amount: '9007199254740993.01', currency: 'BRL' }),
+      opening: { id: 'opening', transactionId: 'opening-tx' },
+    });
+    const props = {
+      providerId: 'provider', walletId: wallet.id, playerId: wallet.playerId,
+      roundId: 'round', gameId: 'game', createdAt,
+      money: Money.from({ amount: '25.00', currency: 'BRL' }),
+    };
+    const transaction = WagerTransaction.create({
+      ...props, id: 'win', externalTransactionId: 'win', idempotencyKey: 'win', payloadHash: 'win',
+      kind: Kind.Win, referenceExternalTransactionId: 'bet',
+    });
+    transaction.markPendingReference(wallet.balance);
+    const reference = referenceState === 'missing' ? undefined : WagerTransaction.create({
+      ...props, id: 'bet', externalTransactionId: 'bet', idempotencyKey: 'bet', payloadHash: 'bet', kind: Kind.Bet,
+    });
+    if (referenceState === 'processed') reference!.process(wallet, { at, ledgerEntryId: 'bet-ledger', priorReversals: [] });
+    if (referenceState === 'rejected') reference!.reject(FailureCode.InsufficientFunds, wallet.balance, at);
+
+    const calls: string[] = [];
+    const events: { eventType: string; data: unknown; correlationId: string }[] = [];
+    const scheduled: { deadline: Date; next: Date }[] = [];
+    const scope = {
+      lockWallet: async () => wallet,
+      loadTransaction: async () => transaction,
+      // Even an old deadline computed from retry time must not extend the TTL.
+      loadPendingReferenceSchedule: async () => ({ attempts: 4, nextAttemptAt: new Date(at.getTime() + 60_000), deadlineAt: new Date(at.getTime() + 86_400_000) }),
+      loadPendingReferenceContext: async () => ({ correlationId: 'original-correlation' }),
+      findReference: async () => { calls.push('reference'); return reference; },
+      findProcessedReversals: async () => [],
+      schedulePendingReference: async (_id: string, _attempts: number, next: Date, deadline: Date) => { scheduled.push({ next, deadline }); },
+      completePendingReference: async () => { calls.push('complete'); },
+      saveWallet: async () => { calls.push('wallet'); },
+      insertLedgerEntry: async () => { calls.push('ledger'); },
+      insertEvents: async (items: typeof events) => { calls.push('outbox'); events.push(...items); },
+    } as unknown as WagerProcessingTransaction;
+    const unitOfWork: WagerProcessingUnitOfWork = { transaction: callback => callback(scope) };
+    const worker = new ProcessPendingReference(unitOfWork, () => at, () => 'event-or-ledger');
+    return { worker, scope, transaction, wallet, calls, events, scheduled, at, item: { id: transaction.id, walletId: wallet.id } };
+  }
+
+  test.each([0, 1, 3_600_000])('expires at deadline plus %s ms despite a future retry and stale deadline', async offset => {
+    const fixture = setup(offset);
+    const before = fixture.wallet.balance;
+    expect(await fixture.worker.execute(fixture.item)).toBe('failed');
+    expect(fixture.transaction.status).toBe(Status.Failed);
+    expect(fixture.transaction.failureCode).toBe(FailureCode.ReferenceNotFound);
+    expect(fixture.transaction.completedAt).toEqual(fixture.at);
+    expect(fixture.transaction.balance).toEqual(before);
+    expect(fixture.wallet.balance).toEqual(before);
+    expect(fixture.wallet.version).toBe(1);
+    expect(fixture.wallet.pendingLedgerEntries).toHaveLength(1); // Opening only.
+    expect(fixture.calls).toEqual(['reference', 'complete', 'outbox']);
+    expect(fixture.events).toMatchObject([{ eventType: 'WagerTransactionFailed', correlationId: 'original-correlation',
+      data: { status: Status.Failed, failureCode: FailureCode.ReferenceNotFound, balance: before.toJSON() } }]);
+    expect(fixture.scheduled).toHaveLength(0);
+    expect(await fixture.worker.execute(fixture.item)).toBe('skipped');
+    expect(fixture.events).toHaveLength(1);
+  });
+
+  test('honors a future retry one millisecond before the deadline', async () => {
+    const fixture = setup(-1);
+    expect(await fixture.worker.execute(fixture.item)).toBe('skipped');
+    expect(fixture.calls).toEqual([]);
+    expect(fixture.transaction.status).toBe(Status.PendingReference);
+  });
+
+  test('a due retry just before expiration preserves the creation deadline', async () => {
+    const fixture = setup(-1);
+    fixture.scope.loadPendingReferenceSchedule = async () => ({ attempts: 4, nextAttemptAt: fixture.at, deadlineAt: null });
+    expect(await fixture.worker.execute(fixture.item)).toBe('rescheduled');
+    expect(fixture.scheduled).toEqual([{ deadline: deadlineAt, next: new Date(fixture.at.getTime() + 960_000) }]);
+    expect(fixture.events).toHaveLength(0);
+  });
+
+  test.each(['processed', 'rejected', 'pending'] as const)('rechecks a %s reference at expiration using domain rules', async state => {
+    const fixture = setup(0, state);
+    const outcome = await fixture.worker.execute(fixture.item);
+    expect(outcome).toBe(state === 'pending' ? 'failed' : state);
+    if (state === 'processed') {
+      expect(fixture.transaction.referenceTransactionId).toBe('bet');
+      expect(fixture.calls).toEqual(['reference', 'wallet', 'complete', 'ledger', 'outbox']);
+      expect(fixture.events.map(event => event.eventType)).toEqual(['WagerTransactionProcessed', 'WalletBalanceChanged']);
+    } else {
+      expect(fixture.transaction.failureCode).toBe(state === 'pending' ? FailureCode.ReferenceNotFound : FailureCode.ReferenceRejected);
+      expect(fixture.calls).toEqual(['reference', 'complete', 'outbox']);
+    }
   });
 });
 

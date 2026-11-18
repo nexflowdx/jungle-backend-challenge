@@ -7,14 +7,14 @@ import {
 
 describe('RunPendingReferenceBatch', () => {
   test('counts outcomes and isolates individual failures', async () => {
-    const items = Array.from({ length: 5 }, (_, index) => ({
+    const items = Array.from({ length: 6 }, (_, index) => ({
       id: `transaction-${index}`,
       walletId: 'wallet',
     }));
 
     const selector: PendingReferenceSelector = {
       findDue: async limit => {
-        expect(limit).toBe(5);
+        expect(limit).toBe(6);
         return items;
       },
     };
@@ -30,6 +30,7 @@ describe('RunPendingReferenceBatch', () => {
           case 'transaction-1': return 'rejected';
           case 'transaction-2': return 'rescheduled';
           case 'transaction-3': return 'skipped';
+          case 'transaction-4': return 'failed';
           default: throw new Error('Simulated failure');
         }
       },
@@ -42,15 +43,15 @@ describe('RunPendingReferenceBatch', () => {
     try {
       const result = await new RunPendingReferenceBatch(
         selector, processor,
-      ).execute(5);
+      ).execute(6);
 
       expect(result).toEqual({
-        selected: 5,
+        selected: 6,
         processed: 1,
         rejected: 1,
         rescheduled: 1,
         skipped: 1,
-        failed: 1,
+        failed: 2,
       });
 
       expect(visited).toEqual(items.map(item => item.id));

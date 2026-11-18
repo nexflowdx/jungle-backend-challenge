@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { WagerProcessingUnitOfWork } from './wager-processing-unit-of-work';
-import { WagerTransactionStatus as Status } from '../domain/wager-transaction.types';
+import { FailureCode, WagerTransactionStatus as Status } from '../domain/wager-transaction.types';
 import { createTransactionEvents } from '../domain/wagering.events';
 
 export interface PendingReferenceWorkItem {
@@ -11,6 +11,7 @@ export interface PendingReferenceWorkItem {
 export type PendingReferenceOutcome =
   | 'processed'
   | 'rejected'
+  | 'failed'
   | 'rescheduled'
   | 'skipped';
 
@@ -42,7 +43,9 @@ export class ProcessPendingReference {
       if (!schedule) return 'skipped';
 
       const at = this.now();
-      if (schedule.nextAttemptAt && schedule.nextAttemptAt > at) {
+      const deadlineAt = new Date(transaction.createdAt.getTime() + 24 * 60 * 60 * 1000);
+      const expired = at >= deadlineAt;
+      if (!expired && schedule.nextAttemptAt && schedule.nextAttemptAt > at) {
         return 'skipped';
       }
 
@@ -64,12 +67,13 @@ export class ProcessPendingReference {
         ...(reference === undefined ? {} : { reference }),
       });
 
+      if (transaction.status === Status.PendingReference && expired) {
+        transaction.fail(FailureCode.ReferenceNotFound, wallet.balance, at);
+      }
+
       if (transaction.status === Status.PendingReference) {
         const attempts = schedule.attempts + 1;
         const delayMs = Math.min(60_000 * 2 ** Math.min(attempts - 1, 6), 3_600_000);
-        const deadlineAt = schedule.deadlineAt
-          ?? new Date(at.getTime() + 24 * 60 * 60 * 1000);
-
         await scope.schedulePendingReference(
           transaction.id,
           attempts,
@@ -93,7 +97,8 @@ export class ProcessPendingReference {
 
       await scope.insertEvents(events);
 
-      return transaction.status === Status.Processed ? 'processed' : 'rejected';
+      return transaction.status === Status.Processed ? 'processed'
+        : transaction.status === Status.Failed ? 'failed' : 'rejected';
     });
   }
 }

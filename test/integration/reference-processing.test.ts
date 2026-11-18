@@ -14,6 +14,7 @@ import type { WagerProcessingUnitOfWork } from '../../src/modules/wagering/appli
 import { WagerTransactionIdentity, WagerIdentityCollisionError } from '../../src/modules/wagering/application/wager-transaction-identity';
 import { WagerRequestFingerprint } from '../../src/modules/wagering/application/wager-request-fingerprint';
 import { PostgresWagerProcessingUnitOfWork } from '../../src/modules/wagering/infrastructure/postgres-wager-processing-unit-of-work';
+import { PostgresPendingReferenceSelector } from '../../src/modules/wagering/infrastructure/postgres-pending-reference-selector';
 import { WagerTransactionKind as Kind, WagerTransactionStatus as Status, FailureCode } from '../../src/modules/wagering/domain/wager-transaction.types';
 import { assertPersistenceTestEnvironment } from './environment';
 import { assertHistoricalReplay } from './historical-replay';
@@ -441,5 +442,145 @@ describe.skipIf(!enabled)('Durable WIN reference PostgreSQL integration (5.5)', 
       ]);
   });
 
+  // Inject the acceptance clock instead of editing immutable created_at in SQL.
+  async function expirationFixture(createdAt = new Date()) {
+    const target = await open();
+    const input = command(target, { causationId: randomUUID() });
+    const accepted = await new ProcessWagerTransaction(work(), new WagerTransactionIdentity(), {
+      now: () => createdAt, newId: randomUUID, retryDelay: async () => {},
+    }).execute(input);
+    const deadlineAt = new Date(createdAt.getTime() + 86_400_000);
+    const item = { id: accepted.transactionId, walletId: target.id };
+    return { target, input, item, createdAt, deadlineAt };
+  }
+
+  test('retries never renew the deadline counted from creation', async () => {
+    const fixture = await expirationFixture();
+    const before = await financialState(fixture.target);
+    for (const hours of [1, 2, 23]) {
+      const at = new Date(fixture.createdAt.getTime() + hours * 3_600_000);
+      expect(await new ProcessPendingReference(work(), () => at).execute(fixture.item)).toBe('rescheduled');
+      expect(await fresh().findOneOrFail(WagerTransactionRecord, fixture.item.id)).toMatchObject({
+        status: Status.PendingReference, referenceDeadlineAt: fixture.deadlineAt,
+      });
+    }
+    const record = await fresh().findOneOrFail(WagerTransactionRecord, fixture.item.id);
+    expect(record.referenceAttempts).toBe(3);
+    expect(await financialState(fixture.target)).toEqual(before);
+    expect(await outbox(fixture.target, fixture.item.id)).toHaveLength(1);
+  });
+
+  test.each([0, 1])('expires at the deadline plus %s ms, preserving finances and emitting exactly once', async offset => {
+    const fixture = await expirationFixture();
+    // Make the final snapshot differ from the original pending acceptance.
+    await processor().execute(unreferenced(fixture.target, { kind: Kind.Bet }));
+    const before = await financialState(fixture.target);
+    const at = new Date(fixture.deadlineAt.getTime() + offset);
+    await fresh().nativeUpdate(WagerTransactionRecord, fixture.item.id, {
+      nextReferenceAttemptAt: new Date(at.getTime() + 3_600_000),
+      referenceDeadlineAt: new Date(at.getTime() + 86_400_000),
+    });
+    const worker = new ProcessPendingReference(work(), () => at);
+    expect(await worker.execute(fixture.item)).toBe('failed');
+    expect(await fresh().findOneOrFail(WagerTransactionRecord, fixture.item.id)).toMatchObject({
+      status: Status.Failed, failureCode: FailureCode.ReferenceNotFound, completedAt: at,
+      acceptedBalance: fixture.target.balance.amount, balance: before.balance,
+    });
+    expect(await financialState(fixture.target)).toEqual(before);
+    expect(await fresh().count(LedgerEntryRecord, { transactionId: fixture.item.id })).toBe(0);
+    const events = await outbox(fixture.target, fixture.item.id);
+    expect(events.map(event => event.eventType).sort()).toEqual(['WagerTransactionFailed', 'WagerTransactionPendingReference']);
+    expect(events.find(event => event.eventType === 'WagerTransactionFailed')).toMatchObject({
+      publishedAt: null, occurredAt: at, payload: {
+        correlationId: fixture.input.correlationId, causationId: fixture.input.causationId,
+        data: { status: Status.Failed, failureCode: FailureCode.ReferenceNotFound,
+          balance: { amount: before.balance, currency: 'BRL' } },
+      },
+    });
+    expect(await worker.execute(fixture.item)).toBe('skipped');
+    expect(await outbox(fixture.target, fixture.item.id)).toHaveLength(2);
+    expect(await financialState(fixture.target)).toEqual(before);
+  });
+
+  test('an arrived reference is processed at the exact deadline despite a future retry', async () => {
+    const fixture = await expirationFixture();
+    await processor().execute(unreferenced(fixture.target, {
+      kind: Kind.Bet, externalTransactionId: fixture.input.referenceExternalTransactionId!,
+    }));
+    await fresh().nativeUpdate(WagerTransactionRecord, fixture.item.id, {
+      nextReferenceAttemptAt: new Date(fixture.deadlineAt.getTime() + 60_000),
+    });
+    expect(await new ProcessPendingReference(work(), () => fixture.deadlineAt).execute(fixture.item)).toBe('processed');
+    expect(await fresh().findOneOrFail(WagerTransactionRecord, fixture.item.id)).toMatchObject({ status: Status.Processed });
+    expect((await financialState(fixture.target)).balance).toBe('100.00');
+    expect(await fresh().count(LedgerEntryRecord, { transactionId: fixture.item.id })).toBe(1);
+  });
+
+  test('outbox failure rolls back expiration and a retry completes it', async () => {
+    const fixture = await expirationFixture();
+    const before = await financialState(fixture.target);
+    const broken: WagerProcessingUnitOfWork = { transaction: callback => work().transaction(scope => callback({
+      ...scope, insertEvents: async events => { await scope.insertEvents(events); throw new Error('Expiration outbox failure'); },
+    })) };
+    await expect(new ProcessPendingReference(broken, () => fixture.deadlineAt).execute(fixture.item))
+      .rejects.toThrow('Expiration outbox failure');
+    expect(await fresh().findOneOrFail(WagerTransactionRecord, fixture.item.id)).toMatchObject({
+      status: Status.PendingReference, failureCode: null, balance: null, completedAt: null,
+      referenceAttempts: 0, nextReferenceAttemptAt: null, referenceDeadlineAt: null,
+    });
+    expect(await outbox(fixture.target, fixture.item.id)).toHaveLength(1);
+    expect(await financialState(fixture.target)).toEqual(before);
+    expect(await fresh().count(LedgerEntryRecord, { transactionId: fixture.item.id })).toBe(0);
+    expect(await new ProcessPendingReference(work(), () => fixture.deadlineAt).execute(fixture.item)).toBe('failed');
+    expect(await outbox(fixture.target, fixture.item.id)).toHaveLength(2);
+  });
+
+  test('two expiration workers serialize and persist one terminal event', async () => {
+    const fixture = await expirationFixture();
+    const before = await financialState(fixture.target);
+    const reached = latch(); const release = latch(); const started = latch();
+    let backend = 0;
+    const held: WagerProcessingUnitOfWork = { transaction: callback => work().transaction(async scope => {
+      const result = await callback(scope); reached.resolve(); await release.promise; return result;
+    }) };
+    const observed: WagerProcessingUnitOfWork = { transaction: callback => work().transaction(scope => callback({
+      ...scope, lockWallet: async id => {
+        const manager = TransactionContext.getEntityManager()!;
+        const rows = await manager.getConnection().execute('SELECT pg_backend_pid() AS pid', [], 'all', manager.getTransactionContext());
+        backend = rows[0].pid as number; started.resolve(); return scope.lockWallet(id);
+      },
+    })) };
+    const first = new ProcessPendingReference(held, () => fixture.deadlineAt).execute(fixture.item);
+    void first.catch(() => {});
+    let second: ReturnType<ProcessPendingReference['execute']> | undefined;
+    try {
+      await Promise.race([reached.promise, first.then(() => { throw new Error('Premature expiration commit'); })]);
+      // Terminal decision and event are still invisible before commit.
+      expect((await fresh().findOneOrFail(WagerTransactionRecord, fixture.item.id)).status).toBe(Status.PendingReference);
+      expect(await outbox(fixture.target, fixture.item.id)).toHaveLength(1);
+      second = new ProcessPendingReference(observed, () => fixture.deadlineAt).execute(fixture.item);
+      void second.catch(() => {});
+      await Promise.race([started.promise, second.then(() => { throw new Error('Premature second worker result'); })]);
+      await waitForLock(backend); release.resolve();
+      expect(await first).toBe('failed'); expect(await second).toBe('skipped');
+      expect(await financialState(fixture.target)).toEqual(before);
+      expect(await fresh().count(LedgerEntryRecord, { transactionId: fixture.item.id })).toBe(0);
+      expect(await outbox(fixture.target, fixture.item.id)).toHaveLength(2);
+    } finally { release.resolve(); await Promise.allSettled(second ? [first, second] : [first]); }
+  });
+
+  test('selector includes expired rows with future retry and no stored deadline, excluding finalized rows', async () => {
+    const expired = await expirationFixture(new Date(Date.now() - 90_000_000));
+    const future = await expirationFixture();
+    const completed = await expirationFixture(new Date(Date.now() - 90_000_000));
+    const nextReferenceAttemptAt = new Date(Date.now() + 86_400_000);
+    for (const fixture of [expired, future, completed]) {
+      await fresh().nativeUpdate(WagerTransactionRecord, fixture.item.id, { nextReferenceAttemptAt });
+    }
+    expect(await new ProcessPendingReference(work(), () => completed.deadlineAt).execute(completed.item)).toBe('failed');
+    const selected = await new PostgresPendingReferenceSelector(orm).findDue(500);
+    expect(selected).toContainEqual(expired.item);
+    expect(selected.some(item => item.id === future.item.id || item.id === completed.item.id)).toBe(false);
+  });
 
 });

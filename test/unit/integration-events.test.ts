@@ -6,7 +6,7 @@ import { WalletBalanceChanged } from '../../src/modules/wallets/domain/wallet-ba
 import { WalletLedgerEntry } from '../../src/modules/wallets/domain/wallet-ledger-entry';
 import { WagerTransaction } from '../../src/modules/wagering/domain/wager-transaction';
 import {
-  createTransactionEvents, WagerTransactionPendingReference, WagerTransactionProcessed, WagerTransactionRejected,
+  createTransactionEvents, WagerTransactionFailed, WagerTransactionPendingReference, WagerTransactionProcessed, WagerTransactionRejected,
 } from '../../src/modules/wagering/domain/wagering.events';
 import { FailureCode, WagerTransactionKind as Kind } from '../../src/modules/wagering/domain/wager-transaction.types';
 import { at, later, money, process, transaction, transactionProps, wallet } from './financial-fixtures';
@@ -119,6 +119,22 @@ describe('Concrete financial events (2.5)', () => {
     expect(event.data.money.currency).toBe('USD');
     expect(event.data.balance.currency).toBe('BRL');
     expect(event.data.failureCode).toBe(FailureCode.CurrencyMismatch);
+  });
+
+  test('failed expiration emits one immutable failure event without a balance event', () => {
+    const target = wallet();
+    const tx = transaction({ kind: Kind.Win, referenceExternalTransactionId: 'missing-bet' });
+    tx.markPendingReference(target.balance);
+    expect(() => WagerTransactionFailed.from(tx, context())).toThrow();
+    tx.fail(FailureCode.ReferenceNotFound, target.balance, later);
+    const events = createTransactionEvents(tx, target, undefined, context);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toBeInstanceOf(WagerTransactionFailed);
+    expect(events[0]!.toJSON()).toMatchObject({
+      eventType: 'WagerTransactionFailed', aggregateId: target.id, version: 1,
+      data: { status: 'FAILED', failureCode: FailureCode.ReferenceNotFound, balance: target.balance.toJSON() },
+    });
+    expect(Object.isFrozen(events[0]!.data)).toBe(true);
   });
 
   test('pending-reference event remains a stable acceptance snapshot after transaction completion', () => {

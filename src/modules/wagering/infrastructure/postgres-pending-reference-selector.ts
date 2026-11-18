@@ -23,6 +23,7 @@ export class PostgresPendingReferenceSelector {
          AND (
            next_reference_attempt_at IS NULL
            OR next_reference_attempt_at <= statement_timestamp()
+           OR created_at <= statement_timestamp() - INTERVAL '24 hours'
          )
        ORDER BY next_reference_attempt_at NULLS FIRST, created_at, id
        LIMIT ?`,
