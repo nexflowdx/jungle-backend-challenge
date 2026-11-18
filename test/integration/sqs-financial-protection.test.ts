@@ -47,11 +47,13 @@ describe.skipIf(!enabled)('Financial protection during SQS retry/DLQ (7.3.4B, re
     expect(result.status).toBe(status); expect(result.balance.amount).toBe(expectedBalance);
     const transactions = financial.transactions.filter(row => row.id === result.transactionId);
     expect(transactions).toHaveLength(1);
-    expect(transactions[0]).toMatchObject({ status, balance: expectedBalance,
+    expect(transactions[0]).toMatchObject({ status, balance: status === Status.PendingReference ? null : expectedBalance,
       failureCode: status === Status.Rejected ? FailureCode.InsufficientFunds : null });
     expect(financial.ledger).toHaveLength(status === Status.Processed ? 2 : 1); // Includes opening entry.
     expect(financial.ledger.filter(entry => entry.transactionId === result.transactionId)).toHaveLength(status === Status.Processed ? 1 : 0);
-    if (status === Status.PendingReference) expect(transactions[0]).toMatchObject({ acceptedBalance: '100.00', completedAt: null, referenceAttempts: 0 });
+    if (status === Status.PendingReference) expect(transactions[0]).toMatchObject({
+      acceptedBalance: '100.00', acceptedCurrency: 'BRL', balanceCurrency: null, completedAt: null, referenceAttempts: 0,
+    });
     else expect(transactions[0]!.completedAt).toBeInstanceOf(Date);
     const identity = wagerMessageIdentity(event);
     const rows = await orm.em.fork().find(InboxMessageRecord, { messageId: identity.messageId, consumerName: identity.consumerName });

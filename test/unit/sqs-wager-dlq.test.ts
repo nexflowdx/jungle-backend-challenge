@@ -55,6 +55,14 @@ test('explicit DLQ preserves the raw body and original group, then deletes only 
   expect(commands[3]!.input).toEqual({ QueueUrl: config.queueUrl, ReceiptHandle: raw.receiptHandle });
 });
 
+// MiniStack v1.5.39 sqs.py emits str(q['fifo_seq']).zfill(20), including on deduplication replay.
+test.each(['00000000000000000001', '00000000000000000042'])('accepts MiniStack zero-padded FIFO confirmation %s without changing the returned sequence', async SequenceNumber => {
+  const f = fixture({ publication: { ...confirmed(), SequenceNumber } });
+  expect(await f.adapter.apply(raw, failure)).toMatchObject({ kind: 'forwarded', publication: { kind: 'confirmed', sequenceNumber: SequenceNumber } });
+  expect(f.send.mock.calls.map(([command]) => command.constructor))
+    .toEqual([GetQueueAttributesCommand, GetQueueAttributesCommand, SendMessageCommand, DeleteMessageCommand]);
+});
+
 test('DeleteMessage waits for SendMessage to resolve with valid confirmation', async () => {
   let entered!: () => void; const publishing = new Promise<void>(resolve => { entered = resolve; });
   let confirm!: (value: SendMessageCommandOutput) => void; const publication = new Promise<SendMessageCommandOutput>(resolve => { confirm = resolve; });
@@ -137,6 +145,8 @@ test('preflight is explicit and both queues are rechecked on each eligible deliv
 test.each([
   {}, { $metadata: { httpStatusCode: 500 } }, { MessageId: undefined }, { MessageId: 'bad id' }, { SequenceNumber: undefined },
   { SequenceNumber: '-1' }, { SequenceNumber: '1.5' }, { SequenceNumber: '1\n' }, { SequenceNumber: '340282366920938463463374607431768211456' },
+  { SequenceNumber: '' }, { SequenceNumber: '01\n' }, { SequenceNumber: ' 01' }, { SequenceNumber: '01e2' },
+  { SequenceNumber: '0x01' }, { SequenceNumber: '0'.repeat(40) },
   { MD5OfMessageBody: undefined }, { MD5OfMessageBody: '0'.repeat(32) },
 ].map((override, index) => ({ publication: index === 0 ? { $metadata: {} } : { ...confirmed(), ...override } })))('unconfirmed FIFO response %# never authorizes deletion', async ({ publication }) => {
   const f = fixture({ publication });

@@ -105,8 +105,9 @@ export class SqsWagerDlq {
       throw new SqsWagerDlqError('DLQ_PUBLISH_FAILED', 'dlq', uncertain, failure, 'SendMessage failed; publication may have occurred; source must be retained', cause);
     }
     const sequence = response?.SequenceNumber;
+    // FIFO decimal sequences may contain leading zeroes (MiniStack 1.5.39 uses zfill(20)).
     if (response?.$metadata?.httpStatusCode !== 200 || !printable(response.MessageId, 100)
-      || typeof sequence !== 'string' || !/^(0|[1-9]\d{0,38})$/.test(sequence) || sequence !== sequence.trim()
+      || typeof sequence !== 'string' || !/^\d{1,39}$/.test(sequence) || sequence !== sequence.trim()
       || BigInt(sequence) > (1n << 128n) - 1n
       || typeof response.MD5OfMessageBody !== 'string'
       || response.MD5OfMessageBody.toLowerCase() !== createHash('md5').update(body, 'utf8').digest('hex')) {
