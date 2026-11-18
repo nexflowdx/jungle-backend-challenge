@@ -30,7 +30,7 @@ describe('RunPendingReferenceBatch', () => {
           case 'transaction-1': return 'rejected';
           case 'transaction-2': return 'rescheduled';
           case 'transaction-3': return 'skipped';
-          case 'transaction-4': return 'failed';
+          case 'transaction-4': return 'expired';
           default: throw new Error('Simulated failure');
         }
       },
@@ -49,9 +49,10 @@ describe('RunPendingReferenceBatch', () => {
         selected: 6,
         processed: 1,
         rejected: 1,
+        expired: 1,
         rescheduled: 1,
         skipped: 1,
-        failed: 2,
+        failed: 1,
       });
 
       expect(visited).toEqual(items.map(item => item.id));
@@ -59,6 +60,25 @@ describe('RunPendingReferenceBatch', () => {
     } finally {
       console.error = originalError;
     }
+  });
+
+  test('counts legitimate expirations without operational failures', async () => {
+    const selector: PendingReferenceSelector = {
+      findDue: async () => [{ id: 'expired-transaction', walletId: 'wallet' }],
+    };
+    const processor: PendingReferenceProcessor = {
+      execute: async () => 'expired',
+    };
+
+    expect(await new RunPendingReferenceBatch(selector, processor).execute()).toEqual({
+      selected: 1,
+      processed: 0,
+      rejected: 0,
+      expired: 1,
+      rescheduled: 0,
+      skipped: 0,
+      failed: 0,
+    });
   });
 
   test('rejects invalid batch sizes before querying', async () => {

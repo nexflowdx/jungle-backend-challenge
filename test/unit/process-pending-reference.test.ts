@@ -185,7 +185,7 @@ describe('Pending reference expiration (8.5)', () => {
   test.each([0, 1, 3_600_000])('expires at deadline plus %s ms despite a future retry and stale deadline', async offset => {
     const fixture = setup(offset);
     const before = fixture.wallet.balance;
-    expect(await fixture.worker.execute(fixture.item)).toBe('failed');
+    expect(await fixture.worker.execute(fixture.item)).toBe('expired');
     expect(fixture.transaction.status).toBe(Status.Failed);
     expect(fixture.transaction.failureCode).toBe(FailureCode.ReferenceNotFound);
     expect(fixture.transaction.completedAt).toEqual(fixture.at);
@@ -199,6 +199,17 @@ describe('Pending reference expiration (8.5)', () => {
     expect(fixture.scheduled).toHaveLength(0);
     expect(await fixture.worker.execute(fixture.item)).toBe('skipped');
     expect(fixture.events).toHaveLength(1);
+  });
+
+  test('propagates an outbox persistence error during expiration as an operational failure', async () => {
+    const fixture = setup(0);
+    const error = new Error('Outbox unavailable');
+    fixture.scope.insertEvents = async () => { throw error; };
+
+    await expect(fixture.worker.execute(fixture.item)).rejects.toBe(error);
+    expect(fixture.events).toHaveLength(0);
+    expect(fixture.wallet.balance.toString()).toBe('9007199254740993.01');
+    expect(fixture.calls).toEqual(['reference', 'complete']);
   });
 
   test('honors a future retry one millisecond before the deadline', async () => {
@@ -219,7 +230,7 @@ describe('Pending reference expiration (8.5)', () => {
   test.each(['processed', 'rejected', 'pending'] as const)('rechecks a %s reference at expiration using domain rules', async state => {
     const fixture = setup(0, state);
     const outcome = await fixture.worker.execute(fixture.item);
-    expect(outcome).toBe(state === 'pending' ? 'failed' : state);
+    expect(outcome).toBe(state === 'pending' ? 'expired' : state);
     if (state === 'processed') {
       expect(fixture.transaction.referenceTransactionId).toBe('bet');
       expect(fixture.calls).toEqual(['reference', 'wallet', 'complete', 'ledger', 'outbox']);

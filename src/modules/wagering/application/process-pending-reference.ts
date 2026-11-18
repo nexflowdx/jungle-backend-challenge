@@ -11,7 +11,7 @@ export interface PendingReferenceWorkItem {
 export type PendingReferenceOutcome =
   | 'processed'
   | 'rejected'
-  | 'failed'
+  | 'expired'
   | 'rescheduled'
   | 'skipped';
 
@@ -98,7 +98,7 @@ export class ProcessPendingReference {
       await scope.insertEvents(events);
 
       return transaction.status === Status.Processed ? 'processed'
-        : transaction.status === Status.Failed ? 'failed' : 'rejected';
+        : transaction.status === Status.Failed ? 'expired' : 'rejected';
     });
   }
 }

@@ -481,7 +481,7 @@ describe.skipIf(!enabled)('Durable WIN reference PostgreSQL integration (5.5)', 
       referenceDeadlineAt: new Date(at.getTime() + 86_400_000),
     });
     const worker = new ProcessPendingReference(work(), () => at);
-    expect(await worker.execute(fixture.item)).toBe('failed');
+    expect(await worker.execute(fixture.item)).toBe('expired');
     expect(await fresh().findOneOrFail(WagerTransactionRecord, fixture.item.id)).toMatchObject({
       status: Status.Failed, failureCode: FailureCode.ReferenceNotFound, completedAt: at,
       acceptedBalance: fixture.target.balance.amount, balance: before.balance,
@@ -531,7 +531,7 @@ describe.skipIf(!enabled)('Durable WIN reference PostgreSQL integration (5.5)', 
     expect(await outbox(fixture.target, fixture.item.id)).toHaveLength(1);
     expect(await financialState(fixture.target)).toEqual(before);
     expect(await fresh().count(LedgerEntryRecord, { transactionId: fixture.item.id })).toBe(0);
-    expect(await new ProcessPendingReference(work(), () => fixture.deadlineAt).execute(fixture.item)).toBe('failed');
+    expect(await new ProcessPendingReference(work(), () => fixture.deadlineAt).execute(fixture.item)).toBe('expired');
     expect(await outbox(fixture.target, fixture.item.id)).toHaveLength(2);
   });
 
@@ -562,7 +562,7 @@ describe.skipIf(!enabled)('Durable WIN reference PostgreSQL integration (5.5)', 
       void second.catch(() => {});
       await Promise.race([started.promise, second.then(() => { throw new Error('Premature second worker result'); })]);
       await waitForLock(backend); release.resolve();
-      expect(await first).toBe('failed'); expect(await second).toBe('skipped');
+      expect(await first).toBe('expired'); expect(await second).toBe('skipped');
       expect(await financialState(fixture.target)).toEqual(before);
       expect(await fresh().count(LedgerEntryRecord, { transactionId: fixture.item.id })).toBe(0);
       expect(await outbox(fixture.target, fixture.item.id)).toHaveLength(2);
@@ -577,7 +577,7 @@ describe.skipIf(!enabled)('Durable WIN reference PostgreSQL integration (5.5)', 
     for (const fixture of [expired, future, completed]) {
       await fresh().nativeUpdate(WagerTransactionRecord, fixture.item.id, { nextReferenceAttemptAt });
     }
-    expect(await new ProcessPendingReference(work(), () => completed.deadlineAt).execute(completed.item)).toBe('failed');
+    expect(await new ProcessPendingReference(work(), () => completed.deadlineAt).execute(completed.item)).toBe('expired');
     const selected = await new PostgresPendingReferenceSelector(orm).findDue(500);
     expect(selected).toContainEqual(expired.item);
     expect(selected.some(item => item.id === future.item.id || item.id === completed.item.id)).toBe(false);

@@ -15,6 +15,7 @@ export interface PendingReferenceBatchResult {
   readonly selected: number;
   readonly processed: number;
   readonly rejected: number;
+  readonly expired: number;
   readonly rescheduled: number;
   readonly skipped: number;
   readonly failed: number;
@@ -37,6 +38,7 @@ export class RunPendingReferenceBatch {
       selected: items.length,
       processed: 0,
       rejected: 0,
+      expired: 0,
       rescheduled: 0,
       skipped: 0,
       failed: 0,
