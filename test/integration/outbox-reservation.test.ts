@@ -55,8 +55,8 @@ describe.skipIf(!enabled)('Outbox reservation with real PostgreSQL (8.1)', () =>
         payload: before.payload, occurredAt: before.occurredAt, nextAttemptAt: before.nextAttemptAt, attempts: 3, publishedAt: null });
       expect(row.leaseToken).toMatch(uuidV4); expect(after.leaseToken).toBe(row.leaseToken); expect(after.attempts).toBe(3);
       const duration = (leaseSeconds ?? 30) * 1000;
-      expect(row.leaseUntil.getTime()).toBeGreaterThanOrEqual(lower!.at.getTime() + duration);
-      expect(row.leaseUntil.getTime()).toBeLessThanOrEqual(upper!.at.getTime() + duration);
+      expect(row.leaseUntil.getTime()).toBeGreaterThanOrEqual(new Date(lower!.at).getTime() + duration);
+      expect(row.leaseUntil.getTime()).toBeLessThanOrEqual(new Date(upper!.at).getTime() + duration);
       expect(after.leaseUntil).toEqual(row.leaseUntil); expect(after.publishedAt).toBeNull();
     });
   });
