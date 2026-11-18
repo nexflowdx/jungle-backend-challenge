@@ -19,6 +19,27 @@ export interface WagerProcessingTransaction {
   saveWallet(wallet: Wallet): Promise<void>;
   /** Persist the initial decision: terminal result or durable PENDING_REFERENCE acceptance. */
   completeTransaction(transaction: WagerTransaction): Promise<void>;
+  /** Recover the original correlation context under the wallet lock. */
+  loadPendingReferenceContext?(transactionId: string): Promise<{
+    correlationId: string;
+    causationId?: string;
+  }>;
+  /** Finalize an existing PENDING_REFERENCE under its wallet lock. */
+  completePendingReference?(transaction: WagerTransaction): Promise<void>;
+  /** Read the current retry state under the wallet lock. */
+  loadPendingReferenceSchedule?(transactionId: string): Promise<{
+    attempts: number;
+    nextAttemptAt: Date | null;
+    deadlineAt: Date | null;
+  } | undefined>;
+  /** Schedule another attempt without changing the accepted financial state. */
+  schedulePendingReference?(
+    transactionId: string,
+    attempts: number,
+    nextAttemptAt: Date,
+    deadlineAt: Date,
+    attemptedAt: Date,
+  ): Promise<void>;
   insertLedgerEntry(entry: WalletLedgerEntry): Promise<void>;
   insertEvents(events: readonly IntegrationEvent<unknown>[]): Promise<void>;
 }

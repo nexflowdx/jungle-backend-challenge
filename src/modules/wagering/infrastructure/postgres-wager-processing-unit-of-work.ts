@@ -102,6 +102,92 @@ export class PostgresWagerProcessingUnitOfWork extends WagerProcessingUnitOfWork
               manager.assign(record, transactionMapper.toRecord(transaction));
               await manager.flush();
             }),
+            loadPendingReferenceContext: transactionId => operation(async () => {
+              if (!lockedWalletId) throw new Error('Context lookup requires the locked wallet');
+
+              const rows = await manager.getConnection().execute<
+                { payload: { correlationId?: unknown; causationId?: unknown } }[]
+              >(
+                `SELECT payload FROM outbox_messages
+                 WHERE aggregate_id = ?
+                   AND event_type = 'WagerTransactionPendingReference'
+                   AND payload->'data'->>'transactionId' = ?
+                 ORDER BY occurred_at, id
+                 LIMIT 2`,
+                [lockedWalletId, transactionId], 'all', manager.getTransactionContext(),
+              );
+
+              if (rows.length !== 1) {
+                throw new Error('Original pending reference context is missing or ambiguous');
+              }
+
+              const { correlationId, causationId } = rows[0]!.payload;
+
+              if (typeof correlationId !== 'string'
+                || (causationId !== undefined && typeof causationId !== 'string')) {
+                throw new Error('Invalid original pending reference context');
+              }
+
+              return {
+                correlationId,
+                ...(causationId === undefined ? {} : { causationId }),
+              };
+            }),
+            completePendingReference: transaction => operation(async () => {
+              requireWallet(transaction.walletId);
+              if (transaction.status !== WagerTransactionStatus.Processed
+                && transaction.status !== WagerTransactionStatus.Rejected) {
+                throw new Error('Pending reference must reach a terminal decision');
+              }
+              const record = await manager.findOneOrFail(WagerTransactionRecord, {
+                id: transaction.id, walletId: lockedWalletId!,
+              }, { lockMode: LockMode.PESSIMISTIC_WRITE, refresh: true });
+              if (record.status !== WagerTransactionStatus.PendingReference) {
+                throw new Error('Only PENDING_REFERENCE can be resumed');
+              }
+              const updated = transactionMapper.toRecord(transaction);
+              updated.referenceAttempts = record.referenceAttempts;
+              updated.nextReferenceAttemptAt = record.nextReferenceAttemptAt;
+              updated.referenceDeadlineAt = record.referenceDeadlineAt;
+              manager.assign(record, updated);
+              await manager.flush();
+            }),
+            loadPendingReferenceSchedule: transactionId => operation(async () => {
+              if (!lockedWalletId) throw new Error('Schedule lookup requires the locked wallet');
+              const record = await manager.findOne(WagerTransactionRecord, {
+                id: transactionId,
+                walletId: lockedWalletId,
+                status: WagerTransactionStatus.PendingReference,
+              }, { lockMode: LockMode.PESSIMISTIC_WRITE, refresh: true });
+              if (!record) return undefined;
+              return {
+                attempts: record.referenceAttempts,
+                nextAttemptAt: record.nextReferenceAttemptAt,
+                deadlineAt: record.referenceDeadlineAt,
+              };
+            }),
+            schedulePendingReference: (transactionId, attempts, nextAttemptAt, deadlineAt, attemptedAt) => operation(async () => {
+              if (!lockedWalletId) throw new Error('Scheduling requires a locked wallet');
+              if (!Number.isSafeInteger(attempts) || attempts < 1
+                || !Number.isFinite(nextAttemptAt.getTime())
+                || !Number.isFinite(deadlineAt.getTime())) {
+                throw new Error('Invalid reference retry schedule');
+              }
+              const changed = await manager.nativeUpdate(WagerTransactionRecord, {
+                id: transactionId, walletId: lockedWalletId,
+                status: WagerTransactionStatus.PendingReference,
+                referenceAttempts: attempts - 1,
+                $or: [
+                  { nextReferenceAttemptAt: null },
+                  { nextReferenceAttemptAt: { $lte: attemptedAt } },
+                ],
+              }, {
+                referenceAttempts: attempts,
+                nextReferenceAttemptAt: nextAttemptAt,
+                referenceDeadlineAt: deadlineAt,
+              });
+              if (changed !== 1) throw new Error('Pending reference scheduling failed');
+            }),
             insertLedgerEntry: entry => operation(async () => {
               requireWallet(entry.walletId);
               await manager.persistAndFlush(ledgerMapper.toRecord(entry));

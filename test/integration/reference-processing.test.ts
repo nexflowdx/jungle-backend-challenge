@@ -8,6 +8,7 @@ import { transactionMapper } from '../../src/database/domain-mappers';
 import { Money } from '../../src/shared/domain/money';
 import { OpenWallet } from '../../src/modules/wallets/application/open-wallet';
 import { PostgresWalletOpeningUnitOfWork } from '../../src/modules/wallets/infrastructure/postgres-wallet-opening-unit-of-work';
+import { ProcessPendingReference } from '../../src/modules/wagering/application/process-pending-reference';
 import { ProcessWagerTransaction, type SupportedWagerCommand } from '../../src/modules/wagering/application/process-wager-transaction';
 import type { WagerProcessingUnitOfWork } from '../../src/modules/wagering/application/wager-processing-unit-of-work';
 import { WagerTransactionIdentity, WagerIdentityCollisionError } from '../../src/modules/wagering/application/wager-transaction-identity';
@@ -295,4 +296,150 @@ describe.skipIf(!enabled)('Durable WIN reference PostgreSQL integration (5.5)', 
       if (decision === 'rollback') await pending(target, input, result.transactionId);
     } finally { release.resolve(); await Promise.allSettled(win ? [bet, win] : [bet]); }
   });
+
+  test('pending WIN worker resolves an arrived BET exactly once', async () => {
+    const target = await open();
+    const input = command(target);
+    const accepted = await processor().execute(input);
+
+    expect(accepted.status).toBe(Status.PendingReference);
+
+    const bet = await processor().execute(unreferenced(target, {
+      kind: Kind.Bet,
+      externalTransactionId: input.referenceExternalTransactionId!,
+      money: { amount: '10.00', currency: 'BRL' },
+    }));
+
+    expect(bet.status).toBe(Status.Processed);
+
+    const worker = new ProcessPendingReference(work());
+    const item = { id: accepted.transactionId, walletId: target.id };
+
+    expect(await worker.execute(item)).toBe('processed');
+
+    const record = await fresh().findOneOrFail(
+      WagerTransactionRecord, accepted.transactionId,
+    );
+
+    expect(record.status).toBe(Status.Processed);
+    expect(record.referenceTransactionId).toBe(bet.transactionId);
+    expect(record.balance).toBe('115.00');
+
+    expect(await fresh().count(LedgerEntryRecord, {
+      transactionId: accepted.transactionId,
+    })).toBe(1);
+
+    expect((await outbox(target, accepted.transactionId))
+      .map(event => event.eventType).sort()).toEqual([
+        'WagerTransactionPendingReference',
+        'WagerTransactionProcessed',
+        'WalletBalanceChanged',
+      ]);
+
+    expect((await financialState(target)).balance).toBe('115.00');
+
+    expect(await worker.execute(item)).toBe('skipped');
+
+    expect(await fresh().count(LedgerEntryRecord, {
+      transactionId: accepted.transactionId,
+    })).toBe(1);
+
+    expect(await outbox(target, accepted.transactionId)).toHaveLength(3);
+  });
+
+
+
+  test('pending worker rolls back financial changes when outbox fails', async () => {
+    const target = await open();
+    const input = command(target);
+    const accepted = await processor().execute(input);
+
+    await processor().execute(unreferenced(target, {
+      kind: Kind.Bet,
+      externalTransactionId: input.referenceExternalTransactionId!,
+      money: { amount: '10.00', currency: 'BRL' },
+    }));
+
+    const before = await financialState(target);
+    const eventsBefore = await outbox(target, accepted.transactionId);
+
+    const broken: WagerProcessingUnitOfWork = {
+      transaction: callback => work().transaction(scope => callback({
+        ...scope,
+        insertEvents: async events => {
+          await scope.insertEvents(events);
+          throw new Error('Injected pending worker outbox failure');
+        },
+      })),
+    };
+
+    const worker = new ProcessPendingReference(broken);
+    const item = { id: accepted.transactionId, walletId: target.id };
+
+    await expect(worker.execute(item))
+      .rejects.toThrow('Injected pending worker outbox failure');
+
+    expect(await financialState(target)).toEqual(before);
+
+    expect(await fresh().findOneOrFail(
+      WagerTransactionRecord, accepted.transactionId,
+    )).toMatchObject({ status: Status.PendingReference });
+
+    expect(await fresh().count(LedgerEntryRecord, {
+      transactionId: accepted.transactionId,
+    })).toBe(0);
+
+    expect(await outbox(target, accepted.transactionId))
+      .toHaveLength(eventsBefore.length);
+
+    expect(await new ProcessPendingReference(work()).execute(item))
+      .toBe('processed');
+  });
+
+
+
+  test('concurrent pending workers complete one WIN only once', async () => {
+    const target = await open();
+    const input = command(target);
+    const accepted = await processor().execute(input);
+
+    await processor().execute(unreferenced(target, {
+      kind: Kind.Bet,
+      externalTransactionId: input.referenceExternalTransactionId!,
+      money: { amount: '10.00', currency: 'BRL' },
+    }));
+
+    const item = { id: accepted.transactionId, walletId: target.id };
+
+    const results = await Promise.all(
+      Array.from({ length: 5 }, () =>
+        new ProcessPendingReference(work()).execute(item),
+      ),
+    );
+
+    expect(results.filter(result => result === 'processed')).toHaveLength(1);
+    expect(results.filter(result => result === 'skipped')).toHaveLength(4);
+
+    expect(await fresh().findOneOrFail(
+      WagerTransactionRecord, accepted.transactionId,
+    )).toMatchObject({
+      status: Status.Processed,
+      balance: '115.00',
+    });
+
+    expect((await financialState(target)).balance).toBe('115.00');
+
+    expect(await fresh().count(LedgerEntryRecord, {
+      transactionId: accepted.transactionId,
+    })).toBe(1);
+
+    expect((await outbox(target, accepted.transactionId))
+      .map(event => event.eventType).sort()).toEqual([
+        'WagerTransactionPendingReference',
+        'WagerTransactionProcessed',
+        'WalletBalanceChanged',
+      ]);
+  });
+
+
 });
