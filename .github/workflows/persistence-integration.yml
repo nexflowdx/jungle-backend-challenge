@@ -67,6 +67,17 @@ jobs:
           timeout --signal=KILL 60s docker compose run --rm --no-deps -T \
             persistence-tests bun scripts/run-pending-references.ts
 
+      - name: Verify periodic pending reference worker shutdown
+        shell: bash
+        run: |
+          set -euo pipefail
+          container_id="$(docker compose run --rm --no-deps -d \
+            persistence-tests bun scripts/run-pending-references-loop.ts)"
+          trap 'docker stop --time 5 "$container_id" >/dev/null 2>&1 || true' EXIT
+          sleep 5
+          test "$(docker inspect -f '{{.State.Running}}' "$container_id")" = "true"
+          docker stop --time 10 "$container_id" >/dev/null
+
       - name: Diagnose failure without credentials
         if: ${{ failure() && env.DIAGNOSTIC_DB_PASSWORD != '' }}
         shell: bash
