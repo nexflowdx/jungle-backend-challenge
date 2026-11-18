@@ -6,7 +6,10 @@ import {
 import type { ReservedOutboxEvent } from '../application/outbox-reservation';
 
 export interface SqsOutboxSendClient {
-  send(command: SendMessageCommand): Promise<SendMessageCommandOutput>;
+  send(
+    command: SendMessageCommand,
+    options?: { abortSignal?: AbortSignal },
+  ): Promise<SendMessageCommandOutput>;
 }
 
 export interface OutboxPublication {
@@ -40,7 +43,10 @@ export class SqsOutboxPublisher {
     }
   }
 
-  async publish(event: ReservedOutboxEvent): Promise<OutboxPublication> {
+  async publish(
+    event: ReservedOutboxEvent,
+    abortSignal?: AbortSignal,
+  ): Promise<OutboxPublication> {
     if (
       !event.id ||
       !event.aggregateId ||
@@ -70,7 +76,7 @@ export class SqsOutboxPublisher {
       MessageBody: body,
       MessageGroupId: event.aggregateId,
       MessageDeduplicationId: event.id,
-    }));
+    }), abortSignal ? { abortSignal } : {});
 
     const sequence = response.SequenceNumber;
 

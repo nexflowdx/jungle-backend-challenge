@@ -17,6 +17,7 @@ export const minimumSqsFinancialProtectionTests = 6;
 export const minimumOutboxReservationTests = 14;
 export const minimumOutboxConfirmationTests = 5;
 export const minimumOutboxRetryTests = 5;
+export const minimumSqsOutboxPublicationTests = 1;
 // Explicit manifest shared by execution and report validation; no filesystem/glob discovery.
 export const requiredIntegrationSuites = [
   ['postgres', minimumPersistenceTests], ['wallet-opening', minimumWalletOpeningTests],
@@ -29,6 +30,7 @@ export const requiredIntegrationSuites = [
   ['outbox-reservation', minimumOutboxReservationTests],
   ['outbox-confirmation', minimumOutboxConfirmationTests],
   ['outbox-retry', minimumOutboxRetryTests],
+  ['sqs-outbox-publication', minimumSqsOutboxPublicationTests],
 ] as const;
 export const minimumPostgresTests = requiredIntegrationSuites.reduce((total, [, minimum]) => total + minimum, 0);
 
