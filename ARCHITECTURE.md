@@ -838,3 +838,60 @@ O runner manual exige 364 casos (347 anteriores + 17 novos), assertivas por caso
 zero skips/falhas e recusa ambiente/endpoint externo. Custos, permissões e limites
 do workflow foram preservados. Os testes reais deste incremento não foram
 executados na VPS nem estão declarados aprovados antes do CI.
+
+## 7.3.3 — Encaminhamento explícito à DLQ e ACK seguro
+
+`SqsWagerDlq` é um adaptador chamado explicitamente, sem registro no bootstrap,
+polling ou alteração de receiver, delivery, retry SQL e processamento financeiro.
+Recebe a entrega bruta e evidência financeira fornecida pelo chamador; exceções
+nunca provam rollback. Apenas `send-to-dlq` da política 7.3.1 permite publicar.
+Resultados duráveis PROCESSED, REJECTED e PENDING_REFERENCE e resultados incertos
+bloqueiam o encaminhamento, mesmo após esgotamento ou falha de ACK.
+
+Corpo, MessageId original, ReceiptHandle atual, MessageGroupId e contador precisam
+estar disponíveis e válidos. Ausências não recebem valores substitutos. O corpo
+é enviado sem parse ou serialização; grupos ausentes ou inválidos bloqueiam envio
+e exclusão com diagnóstico do campo. Recusas do SQS ao corpo também preservam a
+origem. As URLs de origem e destino devem identificar filas FIFO distintas.
+
+Antes do envio, `GetQueueAttributes` consulta primeiro a origem, exigindo HTTP 200,
+origem FIFO e ausência de RedrivePolicy, e depois o destino, exigindo HTTP 200 e
+FifoQueue=true. Falha ou resposta incompleta em qualquer consulta bloqueia envio e
+exclusão, com diagnóstico da fila. A verificação não é armazenada em
+cache. `assertExplicitMode()` também precisa ser chamado antes de qualquer futuro
+consumidor receber mensagens: verificar apenas no encaminhamento não protege
+mensagens incertas contra movimentação nativa. A configuração não deve mudar durante
+o consumo; a consulta não elimina uma corrida com alterações externas da fila.
+O smoke histórico `.github/workflows/ministack-smoke.yml`, com maxReceiveCount=3,
+permanece isolado e inalterado. As filas de integração da inbox não têm redrive.
+A política explícita permite até cinco recebimentos; mudar o redrive nativo para
+cinco ainda permitiria mover resultados incertos ou já persistidos sem autorização.
+Assim, o modo explícito exige ausência de redrive nativo e permissão
+`sqs:GetQueueAttributes` nas duas filas, sem alterar automaticamente a infraestrutura.
+
+`SendMessage` usa MessageDeduplicationId igual ao SHA-256 da serialização do array
+`['wager-dlq-v1', sourceQueueUrl, sourceMessageId]`, com URL normalizada. A identidade
+não depende do receipt handle nem do contador e é transportada no atributo
+`dlqTransferId`, junto de `sourceQueueUrl` e `sourceMessageId`. Não representa um
+identificador financeiro nem depende da validade do JSON recebido.
+
+Somente uma resposta HTTP 200 com MessageId válido, SequenceNumber decimal de até
+128 bits e MD5OfMessageBody correspondente ao corpo confirma o envio FIFO. Então
+o adaptador exclui a origem com o receipt handle atual e exige HTTP 200 no ACK.
+Falha ou resposta incompleta no envio mantém publicação incerta e não emite
+DeleteMessage. ACK falho ou sem confirmação mantém o registro do envio confirmado;
+redelivery pode repetir SendMessage com a mesma identidade. Um ACK perdido pode já
+ter excluído a origem; sua falha não é evidência de alteração do estado financeiro.
+
+A deduplicação FIFO limita-se à janela de cinco minutos; redeliveries posteriores
+podem gerar duplicatas na DLQ. Não há transação atômica entre enviar e excluir,
+nem promessa de exatamente uma publicação. O futuro consumidor da DLQ precisará
+deduplicar persistentemente por `dlqTransferId` antes de produzir efeitos; essa
+persistência e esse consumidor não são implementados neste incremento.
+Referência: https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/using-messagededuplicationid-property.html
+
+`SqsWagerDlqError` distingue validação, configuração, publicação e ACK, preservando
+causa, falha original e estado de publicação (não tentada, incerta ou confirmada).
+Esses erros de transporte não podem ser convertidos em falha financeira ou FAILED.
+Os testes unitários usam respostas controladas e barreira de promessa para verificar
+a ordem dos comandos. Não substituem validação futura com SQS real/emulado.
