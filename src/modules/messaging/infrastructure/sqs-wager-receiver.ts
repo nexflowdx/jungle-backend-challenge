@@ -17,6 +17,14 @@ export interface ReceivedWagerRequest {
   readonly messageGroupId: string;
   readonly envelope: WagerTransactionRequested;
 }
+/** SDK fields are preserved without parsing or normalizing, including missing metadata. */
+export interface ReceivedRawWagerRequest {
+  readonly body: string | undefined;
+  readonly sqsMessageId: string | undefined;
+  readonly receiptHandle: string | undefined;
+  readonly messageGroupId: string | undefined;
+  readonly approximateReceiveCount: string | undefined;
+}
 export function configuration(value: SqsWagerConfiguration): Readonly<SqsWagerConfiguration> {
   const invalid = (): never => { throw new Error('Invalid SQS wagering configuration'); };
   const url = (input: string) => {
@@ -45,22 +53,29 @@ export function createSqsWagerClient(config: SqsWagerConfiguration, credentials?
 export class SqsWagerReceiver {
   private readonly config: Readonly<SqsWagerConfiguration>;
   constructor(private readonly client: SqsReceiveClient, config: SqsWagerConfiguration) { this.config = configuration(config); }
-  async receiveOnce(): Promise<ReceivedWagerRequest | undefined> {
+  async receiveRawOnce(): Promise<ReceivedRawWagerRequest | undefined> {
     const response = await this.client.send(new ReceiveMessageCommand({ QueueUrl: this.config.queueUrl,
       MaxNumberOfMessages: 1, VisibilityTimeout: this.config.visibilityTimeout, WaitTimeSeconds: this.config.waitTimeSeconds,
-      MessageSystemAttributeNames: ['MessageGroupId'],
+      MessageSystemAttributeNames: ['MessageGroupId', 'ApproximateReceiveCount'],
     }));
     const messages = response.Messages ?? [];
     if (messages.length === 0) return undefined;
+    if (messages.length !== 1) throw new InvalidWagerMessageError();
     const message = messages[0]!;
-    const group = message.Attributes?.MessageGroupId;
-    if (messages.length !== 1 || typeof message.Body !== 'string'
-      || typeof message.MessageId !== 'string' || !message.MessageId.trim()
-      || typeof message.ReceiptHandle !== 'string' || !message.ReceiptHandle.trim()
-      || typeof group !== 'string' || !/^[\x21-\x7e]{1,128}$/.test(group)) throw new InvalidWagerMessageError();
+    return Object.freeze({ body: message.Body, sqsMessageId: message.MessageId, receiptHandle: message.ReceiptHandle,
+      messageGroupId: message.Attributes?.MessageGroupId, approximateReceiveCount: message.Attributes?.ApproximateReceiveCount });
+  }
+  /** Compatibility entry point: same validated result, exactly one receive through the raw path. */
+  async receiveOnce(): Promise<ReceivedWagerRequest | undefined> {
+    const message = await this.receiveRawOnce();
+    if (!message) return undefined;
+    if (typeof message.body !== 'string'
+      || typeof message.sqsMessageId !== 'string' || !message.sqsMessageId.trim()
+      || typeof message.receiptHandle !== 'string' || !message.receiptHandle.trim()
+      || typeof message.messageGroupId !== 'string' || !/^[\x21-\x7e]{1,128}$/.test(message.messageGroupId)) throw new InvalidWagerMessageError();
     let body: unknown;
-    try { body = JSON.parse(message.Body) as unknown; } catch { throw new InvalidWagerMessageError(); }
-    return Object.freeze({ sqsMessageId: message.MessageId, receiptHandle: message.ReceiptHandle,
-      messageGroupId: group, envelope: parseWagerTransactionRequested(body) });
+    try { body = JSON.parse(message.body) as unknown; } catch { throw new InvalidWagerMessageError(); }
+    return Object.freeze({ sqsMessageId: message.sqsMessageId, receiptHandle: message.receiptHandle,
+      messageGroupId: message.messageGroupId, envelope: parseWagerTransactionRequested(body) });
   }
 }

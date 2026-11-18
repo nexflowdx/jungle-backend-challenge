@@ -89,7 +89,45 @@ test('receiver issues exactly one AWS ReceiveMessage command with explicit FIFO 
   expect(await receiver.receiveOnce()).toEqual({ sqsMessageId: 'aws-generated-id', receiptHandle: 'opaque-receipt', messageGroupId: 'wallet-group', envelope: event() });
   expect(client.send).toHaveBeenCalledTimes(1); const command = client.send.mock.calls[0]![0];
   expect(command).toBeInstanceOf(ReceiveMessageCommand);
-  expect(command.input).toEqual({ QueueUrl: config.queueUrl, MaxNumberOfMessages: 1, VisibilityTimeout: 45, WaitTimeSeconds: 10, MessageSystemAttributeNames: ['MessageGroupId'] });
+  expect(command.input).toEqual({ QueueUrl: config.queueUrl, MaxNumberOfMessages: 1, VisibilityTimeout: 45, WaitTimeSeconds: 10, MessageSystemAttributeNames: ['MessageGroupId', 'ApproximateReceiveCount'] });
+});
+test.each(['{broken', 'null', '{"type":"invalid"}', '  arbitrary raw body\n'])('raw receive preserves body and metadata without envelope validation %#', async body => {
+  const message = { ...delivered(), Body: body, Attributes: { MessageGroupId: 'wallet-group', ApproximateReceiveCount: '3' } };
+  const client = stub([message]);
+  expect(await new SqsWagerReceiver(client, config).receiveRawOnce()).toEqual({ body, sqsMessageId: message.MessageId,
+    receiptHandle: message.ReceiptHandle, messageGroupId: 'wallet-group', approximateReceiveCount: '3' });
+  expect(client.send).toHaveBeenCalledTimes(1);
+});
+test.each([
+  {}, { Body: '{broken', ReceiptHandle: '', Attributes: { MessageGroupId: 'with space', ApproximateReceiveCount: 'NaN' } },
+  { Body: '', MessageId: '', ReceiptHandle: ' receipt ', Attributes: { ApproximateReceiveCount: '0' } },
+] satisfies Message[])('raw receive preserves missing or invalid metadata %#', async (message: Message) => {
+  const client = stub([message]);
+  expect(await new SqsWagerReceiver(client, config).receiveRawOnce()).toEqual({ body: message.Body, sqsMessageId: message.MessageId,
+    receiptHandle: message.ReceiptHandle, messageGroupId: message.Attributes?.MessageGroupId, approximateReceiveCount: message.Attributes?.ApproximateReceiveCount });
+  expect(client.send).toHaveBeenCalledTimes(1);
+});
+test.each([undefined, []].map(messages => ({ messages })))('empty raw receive %# returns undefined', async ({ messages }) => {
+  const client = stub(messages);
+  expect(await new SqsWagerReceiver(client, config).receiveRawOnce()).toBeUndefined();
+  expect(client.send).toHaveBeenCalledTimes(1);
+});
+test('compatibility receive delegates to raw receive exactly once', async () => {
+  const client = stub([delivered()]);
+  class ObservedReceiver extends SqsWagerReceiver {
+    rawCalls = 0;
+    override receiveRawOnce() { this.rawCalls++; return super.receiveRawOnce(); }
+  }
+  const receiver = new ObservedReceiver(client, config);
+  expect((await receiver.receiveOnce())?.envelope).toEqual(event());
+  expect(receiver.rawCalls).toBe(1); expect(client.send).toHaveBeenCalledTimes(1);
+});
+test('raw receive propagates SDK failures unchanged and rejects unexpected batches', async () => {
+  const error = new Error('SQS unavailable');
+  const send = mock(async (): Promise<ReceiveMessageCommandOutput> => { throw error; });
+  await expect(new SqsWagerReceiver({ send }, config).receiveRawOnce()).rejects.toBe(error);
+  expect(send).toHaveBeenCalledTimes(1);
+  await expect(new SqsWagerReceiver(stub([delivered(), delivered()]), config).receiveRawOnce()).rejects.toBeInstanceOf(InvalidWagerMessageError);
 });
 test.each([undefined, []].map(messages => ({ messages })))('empty SQS receive %# returns no financial result', async ({ messages }) => {
   expect(await new SqsWagerReceiver(stub(messages), config).receiveOnce()).toBeUndefined();
