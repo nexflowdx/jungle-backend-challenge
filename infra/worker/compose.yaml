@@ -1,0 +1,20 @@
+services:
+  pending-reference-worker:
+    build:
+      context: ../..
+      dockerfile: infra/persistence/Dockerfile
+    command: ["bun", "scripts/run-pending-references-loop.ts"]
+    restart: unless-stopped
+    stop_grace_period: 30s
+    environment:
+      PGHOST: ${PGHOST:?PGHOST required}
+      PGPORT: ${PGPORT:?PGPORT required}
+      PGDATABASE: ${PGDATABASE:?PGDATABASE required}
+      PGUSER: ${PGUSER:?PGUSER required}
+      PGPASSWORD: ${PGPASSWORD:?PGPASSWORD required}
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp
