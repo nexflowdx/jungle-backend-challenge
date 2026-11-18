@@ -1,11 +1,12 @@
-# Arquitetura até 5.9 e Marco 6 (novas validações PostgreSQL pendentes)
+# Arquitetura até 7.1 (integração SQS real pendente)
 
 Monólito modular NestJS: `WalletsModule`, `WageringModule`, `MessagingModule` e
 `OperationsModule`. O caso de uso de abertura está implementado em Wallets;
 `ProcessWagerTransaction` processa BET, WIN sem referência e LOSS. WIN com referência
 é validada ou aceita duravelmente em PENDING_REFERENCE. REFUND e ROLLBACK usam a
 mesma fronteira para reversões integrais. POST /wallets e POST /wagering/transactions
-expõem esses casos de uso desde 5.8. Resolução de pendências, consultas e SQS
+expõem esses casos de uso desde 5.8. O 7.1 acrescenta contratos e recebimento SQS
+inativo no bootstrap. Inbox, consumo operacional, resolução de pendências e consultas
 continuam nos próximos incrementos.
 As camadas serão adicionadas conforme seus casos de uso, preservando o domínio
 em TypeScript puro, sem decorators ou dependências de NestJS/ORM.
@@ -714,3 +715,54 @@ São três processos no mesmo container/servidor de teste; não demonstram parti
 rede entre hosts, failover do PostgreSQL ou queda de toda a máquina. A falha após
 commit perde uma resposta IPC, não um ack SQS nem uma conexão HTTP real. Não há
 SQS, worker de pendências, publisher, autenticação nova ou mudança da política financeira.
+
+
+## 7.1 — Contratos e adapter SQS (inativo no bootstrap)
+
+Conforme confirmação do desenvolvedor, 5.9 e Marco 6 passaram no CI com 347 casos
+PostgreSQL e zero falhas. Os limites históricos acima registram o estado anterior.
+O 7.1 acrescenta somente entrada explícita, ainda sem consumidor operacional.
+
+`WagerTransactionRequested` segue o envelope da seção 10 do README: messageId,
+type, occurredAt e data. A validação recusa campos extras, tipos incorretos,
+OPENING, identificadores vazios, valores numéricos e datas UTC inválidas (segundos
+ou milissegundos). Money e a factory existente de identidade/transação validam
+moeda, precisão, limite, positividade e referência obrigatória; nada é calculado
+com number. IDs seguem o contrato de identificador não vazio já adotado no domínio.
+O handler projeta somente data no comando; messageId vira correlationId/causationId.
+O timestamp de transporte não substitui o relógio do caso de uso. Esses metadados
+não participam do fingerprint. O ID do envelope é distinto do MessageId do SQS.
+
+`SqsWagerReceiver.receiveOnce()` faz uma única recepção, com endpoint, região,
+QueueUrl FIFO, visibilidade (0–43200 s) e espera (0–20 s) explícitos. Solicita um
+item e MessageGroupId; preserva grupo e receiptHandle separados do envelope.
+Não exige que o grupo seja igual à wallet: isso não consta do contrato original;
+a serialização financeira permanece garantida pelo PostgreSQL. O grupo deve ser
+um token ASCII imprimível de até 128 caracteres. O recebimento não executa dinheiro.
+`SqsWagerCommandHandler.execute()` valida e encaminha ao mesmo ProcessWagerTransaction,
+retornando seu resultado ou propagando sua falha sem inventar resultado financeiro.
+
+A dependência AWS SDK SQS v3 usa a versão 3.1170.0 já fixada na prova de
+compatibilidade. A factory de cliente recebe endpoint/região explícitos, credenciais
+opcionais (cadeia AWS quando omitidas), maxAttempts=1 e useQueueUrlAsEndpoint=false:
+o destino de rede é o endpoint configurado, não uma substituição pela QueueUrl.
+Não são necessárias credenciais reais para os testes; o cliente simulado recebe
+[ReceiveMessageCommand](https://docs.aws.amazon.com/AWSJavaScriptSDK/v3/latest/client/sqs/command/ReceiveMessageCommand/).
+
+`MessagingModule.register` recebe explicitamente a instância já composta de
+ProcessWagerTransaction e o cliente/configuração. Não presume acesso aos providers
+dinâmicos do HttpApiModule e não cria outra persistência nem outro caso de uso.
+O bootstrap atual mantém MessagingModule vazio, sem hooks, timers ou polling.
+O adapter e o handler ficam disponíveis apenas mediante composição e chamadas
+explícitas; não há consumidor financeiro ativado, exclusão de mensagens ou ack.
+
+Os testes unitários usam cliente SQS simulado, validam contratos, configuração,
+recebimento, projeção, erros e DI Nest. Uma prova com portas em memória reutiliza a
+instância do HTTP e verifica replay entre entradas; não comprova inbox, transporte
+SQS ou concorrência SQL. A integração real/emulada, incluindo entrega FIFO e
+visibilidade, permanece pendente e não foi executada na VPS.
+
+O 7.2 deverá colocar inbox por (consumerName, messageId) na mesma transação SQL
+do processamento e adicionar ack apenas depois do commit, cobrindo redelivery e
+entrada HTTP/SQS com PostgreSQL e SQS emulados reais no CI isolado. Retry/DLQ e
+shutdown permanecem para 7.3–7.4. Nenhuma migration ou regra financeira mudou.

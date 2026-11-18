@@ -19,6 +19,7 @@
     "check": "bun run --bun typecheck && bun run --bun build && bun run bootstrap && bun run --bun test"
   },
   "dependencies": {
+    "@aws-sdk/client-sqs": "3.1170.0",
     "@mikro-orm/core": "6.6.18",
     "@mikro-orm/migrations": "6.6.18",
     "@mikro-orm/postgresql": "6.6.18",
