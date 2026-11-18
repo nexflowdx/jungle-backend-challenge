@@ -5,6 +5,7 @@ import type { WalletLedgerEntry } from '../../src/modules/wallets/domain/wallet-
 import type { IntegrationEvent } from '../../src/shared/domain/integration-event';
 import { WalletAlreadyExistsError } from '../../src/modules/wallets/application/wallet-opening-unit-of-work';
 import type { HttpPersistence } from '../../src/http/http-api.module';
+import { WagerInboxConflictError, type WagerInboxIdentity } from '../../src/modules/wagering/application/wager-inbox';
 import { WagerTransactionKind as Kind, WagerTransactionStatus as Status } from '../../src/modules/wagering/domain/wager-transaction.types';
 
 /** Controller test double using the real domain and use cases. It proves no PostgreSQL constraint or lock guarantee. */
@@ -13,6 +14,7 @@ export class HttpMemoryPersistence implements HttpPersistence {
   transactions = new Map<string, WagerTransaction>();
   ledger: WalletLedgerEntry[] = [];
   events: IntegrationEvent<unknown>[] = [];
+  inbox = new Map<string, WagerInboxIdentity & { receivedAt: Date; processedAt: Date | null }>();
   calls = 0;
   failure: unknown;
   closed = false;
@@ -21,10 +23,11 @@ export class HttpMemoryPersistence implements HttpPersistence {
     this.calls++;
     if (this.failure) throw this.failure;
     const state = this.copy(); const result = await callback(state);
-    this.wallets = state.wallets; this.transactions = state.transactions; this.ledger = state.ledger; this.events = state.events; return result;
+    this.wallets = state.wallets; this.transactions = state.transactions; this.ledger = state.ledger; this.events = state.events; this.inbox = state.inbox; return result;
   }
   private copy() {
     return {
+      inbox: new Map([...this.inbox].map(([key, row]) => [key, { ...row }])),
       wallets: new Map([...this.wallets].map(([id, wallet]) => [id, walletMapper.toDomain(walletMapper.toRecord(wallet))])),
       transactions: new Map([...this.transactions].map(([id, tx]) => [id, transactionMapper.toDomain(transactionMapper.toRecord(tx))])),
       ledger: [...this.ledger], events: [...this.events],
@@ -39,18 +42,33 @@ export class HttpMemoryPersistence implements HttpPersistence {
     insertLedgerEntry: async entry => { state.ledger.push(entry); },
     insertEvents: async events => { state.events.push(...events); },
   })) };
-  readonly wagerProcessing: HttpPersistence['wagerProcessing'] = { transaction: callback => this.transaction(async state => callback({
-    lockWallet: async id => state.wallets.get(id),
-    loadTransaction: async id => state.transactions.get(id),
-    findReference: async (provider, external) => [...state.transactions.values()].find(tx => tx.providerId === provider && tx.externalTransactionId === external),
-    findProcessedReversals: async reference => [...state.transactions.values()].filter(tx => tx.referenceTransactionId === reference && tx.status === Status.Processed
-      && (tx.kind === Kind.Refund || tx.kind === Kind.Rollback)),
-    findIdentityCandidates: async key => [...state.transactions.values()].filter(tx => tx.idempotencyKey === key.idempotencyKey
-      || (tx.providerId === key.providerId && tx.externalTransactionId === key.externalTransactionId)),
-    insertPending: async tx => { state.transactions.set(tx.id, tx); },
-    saveWallet: async wallet => { state.wallets.set(wallet.id, wallet); },
-    completeTransaction: async tx => { state.transactions.set(tx.id, tx); },
-    insertLedgerEntry: async entry => { state.ledger.push(entry); },
-    insertEvents: async events => { state.events.push(...events); },
-  })) };
+  readonly wagerProcessing: HttpPersistence['wagerProcessing'] = { transaction: callback => this.transaction(async state => {
+    let key: string | undefined;
+    return callback({
+      inbox: {
+        claim: async (message, receivedAt) => {
+          key = JSON.stringify([message.consumerName, message.messageId]);
+          const existing = state.inbox.get(key);
+          if (existing && existing.payloadHash !== message.payloadHash) throw new WagerInboxConflictError();
+          if (!existing) state.inbox.set(key, { ...message, receivedAt, processedAt: null });
+          return existing?.processedAt ? 'completed' : 'unprocessed';
+        },
+        complete: async processedAt => {
+          if (!key) throw new Error('No inbox claim');
+          state.inbox.get(key)!.processedAt = processedAt;
+        },
+      },
+      lockWallet: async id => state.wallets.get(id),
+      loadTransaction: async id => state.transactions.get(id),
+      findReference: async (provider, external) => [...state.transactions.values()].find(tx => tx.providerId === provider && tx.externalTransactionId === external),
+      findProcessedReversals: async reference => [...state.transactions.values()].filter(tx => tx.referenceTransactionId === reference && tx.status === Status.Processed
+        && (tx.kind === Kind.Refund || tx.kind === Kind.Rollback)),
+      findIdentityCandidates: async key => [...state.transactions.values()].filter(tx => tx.idempotencyKey === key.idempotencyKey
+        || (tx.providerId === key.providerId && tx.externalTransactionId === key.externalTransactionId)),
+      insertPending: async tx => { state.transactions.set(tx.id, tx); },
+      saveWallet: async wallet => { state.wallets.set(wallet.id, wallet); },
+      completeTransaction: async tx => { state.transactions.set(tx.id, tx); },
+      insertLedgerEntry: async entry => { state.ledger.push(entry); },
+      insertEvents: async events => { state.events.push(...events); },
+  }); }) };
 }

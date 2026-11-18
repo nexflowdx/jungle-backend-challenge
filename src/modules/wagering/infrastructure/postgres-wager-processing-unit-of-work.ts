@@ -1,10 +1,11 @@
 import { DeadlockException, LockMode, UniqueConstraintViolationException } from '@mikro-orm/core';
 import type { MikroORM } from '@mikro-orm/postgresql';
 import { ledgerMapper, outboxRecord, transactionMapper, walletMapper } from '../../../database/domain-mappers';
-import { WagerTransactionRecord, WalletRecord } from '../../../database/entities';
+import { InboxMessageRecord, WagerTransactionRecord, WalletRecord } from '../../../database/entities';
 import { runPostgresTransaction } from '../../../database/postgres-transaction';
 import { WagerProcessingRetryableError, WagerProcessingUnitOfWork, type WagerProcessingTransaction } from '../application/wager-processing-unit-of-work';
 import { WagerIdentityCollisionError } from '../application/wager-transaction-identity';
+import { WagerInboxConflictError, type WagerInboxIdentity } from '../application/wager-inbox';
 import { WagerTransactionKind, WagerTransactionStatus } from '../domain/wager-transaction.types';
 
 export class PostgresWagerProcessingUnitOfWork extends WagerProcessingUnitOfWork {
@@ -17,6 +18,8 @@ export class PostgresWagerProcessingUnitOfWork extends WagerProcessingUnitOfWork
         let failure: { error: unknown } | undefined;
         let lockedWalletId: string | undefined;
         let lockedVersion: number | undefined;
+        let claimedMessage: WagerInboxIdentity | undefined;
+        let inboxCompleted = false;
         const requireWallet = (walletId: string): void => {
           if (lockedWalletId !== walletId) throw new Error('Financial writes require the locked wallet');
         };
@@ -27,6 +30,30 @@ export class PostgresWagerProcessingUnitOfWork extends WagerProcessingUnitOfWork
         };
         try {
           const result = await work({
+            inbox: {
+              claim: (message, receivedAt) => operation(async () => {
+                if (lockedWalletId || claimedMessage) throw new Error('Claim exactly one inbox message before locking a wallet');
+                // ON CONFLICT waits for an uncommitted winner without aborting this transaction.
+                await manager.getConnection().execute(`INSERT INTO inbox_messages
+                  (message_id,consumer_name,payload_hash,received_at) VALUES (?,?,?,?)
+                  ON CONFLICT (message_id,consumer_name) DO NOTHING`,
+                  [message.messageId, message.consumerName, message.payloadHash, receivedAt], 'all', manager.getTransactionContext());
+                const record = await manager.findOneOrFail(InboxMessageRecord, {
+                  messageId: message.messageId, consumerName: message.consumerName,
+                }, { lockMode: LockMode.PESSIMISTIC_WRITE, refresh: true });
+                if (record.payloadHash !== message.payloadHash) throw new WagerInboxConflictError();
+                claimedMessage = Object.freeze({ ...message }); inboxCompleted = record.processedAt !== null;
+                return inboxCompleted ? 'completed' : 'unprocessed';
+              }),
+              complete: processedAt => operation(async () => {
+                if (!claimedMessage || !lockedWalletId || inboxCompleted) throw new Error('Inbox completion requires an unfinished claim and locked wallet');
+                const changed = await manager.nativeUpdate(InboxMessageRecord, {
+                  messageId: claimedMessage.messageId, consumerName: claimedMessage.consumerName, processedAt: null,
+                }, { processedAt });
+                if (changed !== 1) throw new Error('Inbox completion failed');
+                inboxCompleted = true;
+              }),
+            },
             lockWallet: walletId => operation(async () => {
               if (lockedWalletId && lockedWalletId !== walletId) throw new Error('A transaction can lock only one wallet');
               const record = await manager.findOne(WalletRecord, walletId, { lockMode: LockMode.PESSIMISTIC_WRITE, refresh: true });
@@ -97,6 +124,7 @@ export class PostgresWagerProcessingUnitOfWork extends WagerProcessingUnitOfWork
           });
           // A callback cannot turn a swallowed database failure into a successful commit.
           if (failure) throw failure.error;
+          if (claimedMessage && !inboxCompleted) throw new Error('Cannot commit an unfinished inbox message');
           return result;
         } finally { active = false; }
       });

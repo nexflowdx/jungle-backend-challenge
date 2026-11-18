@@ -1,4 +1,4 @@
-name: Milestones 3–6 PostgreSQL Integration
+name: Milestones 3–7.2 PostgreSQL and SQS Integration
 
 on:
   workflow_dispatch:
@@ -48,13 +48,13 @@ jobs:
           set -euo pipefail
           timeout --signal=KILL 300s docker compose --progress plain build --pull persistence-tests
 
-      - name: Start disposable PostgreSQL
+      - name: Start disposable PostgreSQL and SQS emulator
         shell: bash
         run: |
           set -euo pipefail
-          timeout --signal=KILL 180s docker compose up --detach --wait --wait-timeout 60 postgres
+          timeout --signal=KILL 180s docker compose up --detach --wait --wait-timeout 60 postgres ministack
 
-      - name: Test persistence, opening, identity, atomic BET, WIN, LOSS, references, REFUND, ROLLBACK, historical results, HTTP contracts, atomicity and three-process concurrency
+      - name: Test persistence, opening, identity, atomic BET, WIN, LOSS, references, REFUND, ROLLBACK, historical results, HTTP contracts, atomicity, three-process concurrency and atomic SQS inbox/ACK
         shell: bash
         run: |
           set -euo pipefail

@@ -1,11 +1,11 @@
-import { assertPersistenceTestEnvironment } from '../test/integration/environment';
+import { assertSqsTestEnvironment } from '../test/helpers/sqs-test-environment';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { assertPostgresReport } from './integration-report';
 
 async function main(): Promise<void> {
-  assertPersistenceTestEnvironment(process.env);
+  assertSqsTestEnvironment(process.env);
   const directory = await mkdtemp(join(tmpdir(), 'jungle-postgres-report-'));
   try {
     const report = join(directory, 'results.xml');
@@ -20,13 +20,14 @@ async function main(): Promise<void> {
       './.test-dist/test/integration/http-api.test.js',
       './.test-dist/test/integration/wager-atomicity.test.js',
       './.test-dist/test/integration/wager-multiprocess.test.js',
+      './.test-dist/test/integration/sqs-inbox.test.js',
       '--timeout=10000', '--reporter=junit', `--reporter-outfile=${report}`], {
       env: { ...process.env, PERSISTENCE_INTEGRATION: '1' }, stdout: 'inherit', stderr: 'inherit',
     });
     const code = await child.exited;
     if (code !== 0) throw new Error(`PostgreSQL integration failed with exit code ${code}`);
     assertPostgresReport(await readFile(report, 'utf8'));
-    console.log('PostgreSQL integration verified: all required tests ran, zero skips.');
+    console.log('PostgreSQL/SQS integration verified: all required tests ran, zero skips.');
   } finally { await rm(directory, { recursive: true, force: true }); }
 }
 void main().catch(error => { console.error(error.message); process.exitCode = 1; });

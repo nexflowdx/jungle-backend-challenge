@@ -11,7 +11,8 @@ export const minimumReversalProcessingTests = 90;
 export const minimumHttpApiTests = 5;
 export const minimumWagerAtomicityTests = 6;
 export const minimumWagerMultiprocessTests = 10;
-export const minimumPostgresTests = minimumPersistenceTests + minimumWalletOpeningTests + minimumWagerInfrastructureTests + minimumWagerIdentityTests + minimumBetProcessingTests + minimumWinLossProcessingTests + minimumReferenceProcessingTests + minimumReversalProcessingTests + minimumHttpApiTests + minimumWagerAtomicityTests + minimumWagerMultiprocessTests;
+export const minimumSqsInboxTests = 17;
+export const minimumPostgresTests = minimumPersistenceTests + minimumWalletOpeningTests + minimumWagerInfrastructureTests + minimumWagerIdentityTests + minimumBetProcessingTests + minimumWinLossProcessingTests + minimumReferenceProcessingTests + minimumReversalProcessingTests + minimumHttpApiTests + minimumWagerAtomicityTests + minimumWagerMultiprocessTests + minimumSqsInboxTests;
 
 export function assertPostgresReport(xml: string): void {
   const root = xml.match(/<testsuites\b([^>]*)>/)?.[1];
@@ -38,6 +39,7 @@ export function assertPostgresReport(xml: string): void {
     ['http-api', minimumHttpApiTests],
     ['wager-atomicity', minimumWagerAtomicityTests],
     ['wager-multiprocess', minimumWagerMultiprocessTests],
+    ['sqs-inbox', minimumSqsInboxTests],
   ] as const) {
     const path = new RegExp(`\\bfile="[^"]*\\/${file}\\.test\\.(?:js|ts)"`);
     const executed = cases.filter(attributes => path.test(attributes)

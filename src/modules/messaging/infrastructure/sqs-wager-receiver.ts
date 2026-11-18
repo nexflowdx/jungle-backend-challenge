@@ -17,7 +17,7 @@ export interface ReceivedWagerRequest {
   readonly messageGroupId: string;
   readonly envelope: WagerTransactionRequested;
 }
-function configuration(value: SqsWagerConfiguration): Readonly<SqsWagerConfiguration> {
+export function configuration(value: SqsWagerConfiguration): Readonly<SqsWagerConfiguration> {
   const invalid = (): never => { throw new Error('Invalid SQS wagering configuration'); };
   const url = (input: string) => {
     if (typeof input !== 'string' || input !== input.trim()) return invalid();

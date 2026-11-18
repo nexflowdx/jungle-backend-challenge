@@ -2,9 +2,12 @@ import type { WagerTransaction } from '../domain/wager-transaction';
 import type { WagerIdentityKey } from './wager-transaction-identity';
 import type { Wallet } from '../../wallets/domain/wallet';
 import type { WalletLedgerEntry } from '../../wallets/domain/wallet-ledger-entry';
+import type { WagerInboxTransaction } from './wager-inbox';
 import type { IntegrationEvent } from '../../../shared/domain/integration-event';
 
 export interface WagerProcessingTransaction {
+  /** Optional for HTTP-only adapters; message processing fails closed when this is absent. */
+  readonly inbox?: WagerInboxTransaction;
   findIdentityCandidates(identity: WagerIdentityKey): Promise<readonly WagerTransaction[]>;
   insertPending(transaction: WagerTransaction): Promise<void>;
   lockWallet(walletId: string): Promise<Wallet | undefined>;

@@ -125,7 +125,11 @@ test('Nest composition shares the HTTP use case explicitly; startup never polls 
   const persistence = new HttpMemoryPersistence(); const http = await createHttpApplication(persistence, { logger: false });
   let messaging: Awaited<ReturnType<typeof NestFactory.createApplicationContext>> | undefined;
   try {
-    await http.init(); const process = http.get(ProcessWagerTransaction); const client = stub([delivered()]);
+    await http.init(); const process = http.get(ProcessWagerTransaction); const receiverClient = stub([delivered()]);
+    const client = { send: mock(async (command: ReceiveMessageCommand | import('@aws-sdk/client-sqs').DeleteMessageCommand) => {
+      if (command instanceof ReceiveMessageCommand) return receiverClient.send(command);
+      return { $metadata: {} };
+    }) };
     messaging = await NestFactory.createApplicationContext(MessagingModule.register({ processTransaction: process, client, configuration: config }), { logger: false, abortOnError: false });
     expect(messaging.get(ProcessWagerTransaction)).toBe(process); expect(client.send).not.toHaveBeenCalled(); expect(persistence.calls).toBe(0);
     const wallet = await httpRequest(http, '/wallets', { playerId: 'player', initialBalance: { amount: '100.00', currency: 'BRL' } });

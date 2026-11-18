@@ -1,12 +1,12 @@
-# Arquitetura até 7.1 (integração SQS real pendente)
+# Arquitetura até 7.2 (validação PostgreSQL/SQS do incremento pendente)
 
 Monólito modular NestJS: `WalletsModule`, `WageringModule`, `MessagingModule` e
 `OperationsModule`. O caso de uso de abertura está implementado em Wallets;
 `ProcessWagerTransaction` processa BET, WIN sem referência e LOSS. WIN com referência
 é validada ou aceita duravelmente em PENDING_REFERENCE. REFUND e ROLLBACK usam a
 mesma fronteira para reversões integrais. POST /wallets e POST /wagering/transactions
-expõem esses casos de uso desde 5.8. O 7.1 acrescenta contratos e recebimento SQS
-inativo no bootstrap. Inbox, consumo operacional, resolução de pendências e consultas
+expõem esses casos de uso desde 5.8. O 7.2 acrescenta inbox atômica e ACK explícito após commit, mantendo SQS
+inativo no bootstrap. Consumo operacional, resolução de pendências e consultas
 continuam nos próximos incrementos.
 As camadas serão adicionadas conforme seus casos de uso, preservando o domínio
 em TypeScript puro, sem decorators ou dependências de NestJS/ORM.
@@ -766,3 +766,75 @@ O 7.2 deverá colocar inbox por (consumerName, messageId) na mesma transação S
 do processamento e adicionar ack apenas depois do commit, cobrindo redelivery e
 entrada HTTP/SQS com PostgreSQL e SQS emulados reais no CI isolado. Retry/DLQ e
 shutdown permanecem para 7.3–7.4. Nenhuma migration ou regra financeira mudou.
+
+
+## 7.2 — Inbox atômica e ACK após commit
+
+A chave é (envelope.messageId, consumerName='wager-transactions'), na tabela
+inbox_messages existente. O ID lógico sobrevive à republicação, que recebe outro
+MessageId do SQS; o receipt handle pertence apenas à entrega atual. Ambos os campos
+de transporte, além do grupo FIFO, ficam fora da identidade/hash da inbox.
+
+O SHA-256 da mensagem usa uma projeção canônica versionada (version='1'), com
+business (JSON já ordenado pelo WagerRequestFingerprint), idempotencyKey,
+occurredAt normalizado via ISO UTC e type. Todos os campos validados do conteúdo
+são cobertos; messageId integra a chave. Money é normalizado pelo domínio, sem
+number. Ordem de chaves e zeros à esquerda não mudam o hash; uma mudança no timestamp,
+na chave financeira ou nos campos de negócio é uma colisão do mesmo ID lógico.
+Esse hash de mensagem é separado do fingerprint financeiro, que continua excluindo
+metadados e mantém o contrato HTTP anterior.
+
+ProcessWagerTransaction.execute aceita uma identidade de inbox opcional, sem SDK
+ou ORM na aplicação. A porta transacional oferece inbox.claim/complete no mesmo
+scope financeiro. O adapter PostgreSQL implementa esse recurso; adapters somente
+HTTP podem omiti-lo, mas uma execução com mensagem falha antes da wallet se o
+recurso não existir. Não há wrapper com segunda transação externa ou commit de
+reserva de identidade. O pipeline financeiro foi extraído em um método privado,
+preservando as operações e a ordem de gravações já validadas.
+
+Ordem por tentativa: BEGIN → INSERT inbox ON CONFLICT DO NOTHING → SELECT inbox
+FOR UPDATE → verificar hash → lock da wallet → identidade/operação financeira →
+wallet/resultado/ledger/outbox → inbox.processed_at → COMMIT → resolver execute →
+DeleteMessageCommand com o receipt handle recebido. O INSERT aguarda o vencedor
+concorrente sem deixar a transação abortada. Conteúdo divergente lança
+WAGER_INBOX_CONFLICT e reverte a tentativa inteira. A constraint composta existente
+continua sendo a garantia definitiva; consultas prévias não decidem exclusividade.
+O adapter recusa commit de uma reserva sem conclusão e não permite reivindicar
+outra mensagem nem adquirir inbox após o lock de wallet.
+
+Inbox concluída exige replay financeiro histórico, sem nova movimentação. Ela
+não substitui o resultado financeiro (não existe snapshot/result ID na tabela);
+a identidade de negócio imutável permite reconstruí-lo dos dados da transação.
+Se esses dados estiverem ausentes, a execução falha e reverte, sem autorizar uma
+nova operação. Uma linha antiga não concluída, com hash compatível, pode ser
+retomada sob lock e concluída atomicamente. processed_at existente não é reescrito.
+
+Uma colisão UNIQUE financeira continua sendo tratada somente após rollback.
+A inbox da tentativa perdedora também reverte; a recuperação consulta o vencedor
+em nova transação e, se for replay, outra tentativa reserva inbox, trava wallet,
+carrega o resultado e conclui inbox no mesmo commit. Falhas genéricas de banco
+não são reinterpretadas como conflito ou aceitação.
+
+PROCESSED, REJECTED e PENDING_REFERENCE representam consumo durável e recebem
+ACK. processed_at significa mensagem consumida, não resolução financeira terminal;
+um replay pendente preserva o snapshot mesmo após a referência chegar. Rejeição
+financeira não é falha técnica. Erro antes/durante commit não envia DeleteMessage.
+Falha de ACK depois de commit propaga; redelivery encontra inbox/identidade
+persistidas e não repete efeitos. Um erro ambíguo na conexão durante COMMIT também
+não recebe ACK; a entrega seguinte verifica o estado durável.
+
+SqsWagerDelivery trata uma entrega explícita e aguarda o handler antes de excluir.
+MessagingModule fornece esse componente apenas quando registrado explicitamente;
+bootstrap não inicia polling, consumer ou retry. O cliente SDK mantém maxAttempts=1.
+Backoff, DLQ e shutdown operacional continuam para 7.3–7.4.
+
+Os testes unitários com portas em memória verificam a orquestração e não provam
+atomicidade SQL. A suíte sqs-inbox acrescenta 17 casos reais: entrega/ACK, reinício,
+colisões, identidades independentes, HTTP→SQS, rejeição e pendência históricas,
+concorrência com locks observados (inclusive vencedor revertido), falhas pré-commit, erro diferido de commit,
+falha de ACK e colisão UNIQUE financeira. As filas usam o MiniStack já aprovado,
+sem portas publicadas, no mesmo Compose interno do PostgreSQL descartável.
+O runner manual exige 364 casos (347 anteriores + 17 novos), assertivas por caso,
+zero skips/falhas e recusa ambiente/endpoint externo. Custos, permissões e limites
+do workflow foram preservados. Os testes reais deste incremento não foram
+executados na VPS nem estão declarados aprovados antes do CI.

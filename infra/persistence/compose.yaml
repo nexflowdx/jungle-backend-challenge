@@ -7,6 +7,11 @@ services:
     environment:
       POSTGRES_DB: jungle_persistence_test
 
+  ministack:
+    extends:
+      file: ../../experiments/compatibility-03/compose.yaml
+      service: ministack
+
   persistence-tests:
     build:
       context: ../..
@@ -18,12 +23,16 @@ services:
     environment:
       GITHUB_ACTIONS: ${GITHUB_ACTIONS:?GitHub Actions execution required}
       PERSISTENCE_TEST_CONTAINER: '1'
+      SQS_ENDPOINT: http://ministack:4566
+      AWS_EC2_METADATA_DISABLED: 'true'
       PGHOST: postgres
       PGDATABASE: jungle_persistence_test
       PGUSER: diagnostic
       PGPASSWORD: ${DIAGNOSTIC_DB_PASSWORD:?temporary diagnostic password required}
     depends_on:
       postgres:
+        condition: service_healthy
+      ministack:
         condition: service_healthy
     networks: [diagnostic]
 
