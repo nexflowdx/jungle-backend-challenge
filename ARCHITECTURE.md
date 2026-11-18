@@ -942,3 +942,72 @@ da prova: falha real de conexão durante COMMIT, IAM da AWS, semântica integral
 do SQS e deduplicação persistente além da janela FIFO de cinco minutos. Os wrappers
 de perda de resposta comprovam o comportamento conservador do cliente sob falhas
 controladas, sem substituir persistência e transporte reais no caminho principal.
+
+## 8.1 — Reserva limitada da outbox
+
+`OutboxReservation` define uma reserva explícita e limitada, separada dos produtores
+financeiros. `outboxReservationParameters` valida as opções antes de adquirir conexão:
+lote inteiro de 1 a 100 eventos e lease inteiro de 1 a 3600 segundos, com default de
+30 segundos. Esses limites são escolhas de capacidade e proteção operacional; o
+README exige concorrência e recuperação, sem prescrever os valores. O chamador deve
+reservar somente a quantidade que pode começar a trabalhar imediatamente.
+
+`ReservedOutboxEvent` expõe um snapshot separado do contexto ORM, com identidade e
+payload originais, tentativas, agenda e a nova concessão (`leaseToken`, `leaseUntil`).
+O token identifica a reserva, não um novo evento financeiro. O contrato devolve
+eventos somente após COMMIT e não oferece publicação, confirmação, ACK ou polling.
+
+`PostgresOutboxReservation` reutiliza `runPostgresTransaction`, com fork próprio e
+uma transação SQL curta. A seleção exige `published_at IS NULL`, agenda nula ou
+vencida e lease nulo ou expirado, comparados a `statement_timestamp()` do PostgreSQL.
+A ordem é `next_attempt_at NULLS FIRST, occurred_at, id`, com limite e
+`FOR UPDATE SKIP LOCKED`: linhas já bloqueadas são ignoradas, sem bloquear toda a
+fila ou adquirir locks financeiros. Essa distribuição de trabalho não representa
+uma visão financeira global nem uma promessa de justiça entre publishers.
+
+Na mesma transação, um UPDATE em lote com `jsonb_to_recordset` atribui UUID novo por
+evento, incrementa `attempts` e calcula `lease_until` com o relógio do banco. A agenda
+e `published_at` não são alterados. O adapter verifica a cardinalidade, restaura a
+ordem da seleção após `UPDATE RETURNING` e só entrega as concessões após COMMIT.
+Payload e datas são copiados, sem expor entidades do Identity Map; o congelamento
+externo não deve ser confundido com imutabilidade profunda de todo objeto retornado.
+Erro na reserva ou perda da resposta de COMMIT não comprova que uma reserva deixou
+de existir: a elegibilidade persistida e a expiração continuam decidindo a retomada.
+
+O Marco 8.1 pode ser construído sobre a outbox já gravada atomicamente por abertura e
+processamento financeiro; tecnicamente não depende do consumidor contínuo ou do
+shutdown do Marco 7.4. Isso não conclui nem remove esses requisitos de operação. A
+reserva não deve adquirir locks de wallet, alterar dinheiro, reabrir resultados ou
+modificar IDs, payloads e datas originais dos eventos. A fronteira transacional dos
+produtores permanece responsável pela visibilidade de eventos somente após COMMIT.
+
+Lease é exclusividade temporária no banco, não garantia de exatamente uma publicação.
+O Marco 8.2 deverá publicar fora da transação de reserva e confirmar/reagendar apenas
+quando `id` e token ainda corresponderem à concessão atual. O Marco 8.3 demonstrará
+quedas em torno do envio e recuperação completa: um envio antigo pode completar
+após expiração e causar duplicata. O `eventId` precisa permanecer estável e o
+consumidor futuro precisa deduplicar persistentemente. Esgotamento de tentativas
+não deve descartar silenciosamente eventos da outbox.
+
+A suíte `outbox-reservation` prepara 14 casos PostgreSQL: lote vazio, filtros de
+elegibilidade, ordem e limite, três durações de lease (default, mínimo e máximo),
+exclusão de lease ativo, retomada de lease expirado com token novo, rollback de lote,
+dois reservadores com sessões independentes, progresso com linha concorrente ainda
+bloqueada, liberação dos locks após COMMIT e eventos de produtores antes do COMMIT ou
+revertidos. A prova de `SKIP LOCKED` usa barreiras e exige progresso antes de liberar
+o lock concorrente; não usa uma espera temporal como substituto de concorrência.
+O prazo do lease é comparado com leituras do relógio do banco que envolvem a reserva.
+
+A fixture mantém o backlog não publicado preexistente bloqueado em uma sessão
+própria, apenas durante cada caso sequencial, para que o adapter global o ignore por
+`SKIP LOCKED`. Ela não modifica nem exclui eventos de outros testes, insere IDs
+próprios e libera locks e limpa esses IDs em `finally`, preservando o erro original
+se a limpeza também falhar. Não é um filtro de produção por prefixo ou publisher.
+O manifesto compartilhado entre runner e relatório acrescenta essa suíte aos 383
+casos anteriores: mínimo obrigatório de 397 casos em 15 suítes, com assertivas e
+zero skips/falhas. Publicação real, fencing da confirmação e recuperação após morte
+do publisher continuam para 8.2 e 8.3.
+
+Nenhuma validação integrada de 8.1 é declarada antes da execução autorizada no Actions
+com PostgreSQL real. Typecheck, compilação e unitários locais não demonstram a
+exclusividade de locks entre sessões nem a recuperação persistente após expiração.

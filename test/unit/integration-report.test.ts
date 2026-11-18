@@ -13,17 +13,17 @@ const report = (attributes = '', cases = minimumPostgresTests, content = '') =>
 test('integration report accepts a complete run with assertions and no skips', () => {
   expect(() => assertPostgresReport(report())).not.toThrow();
 });
-test('integration report rejects 384 cases when the extra named testcase has zero assertions', () => {
-  const xml = report('', 384).replace('extra.test.js" assertions="1"', 'extra.test.js" assertions="0"');
+test('integration report rejects an extra named testcase with zero assertions beyond all required cases', () => {
+  const xml = report('', minimumPostgresTests + 1).replace('extra.test.js" assertions="1"', 'extra.test.js" assertions="0"');
   expect(() => assertPostgresReport(xml)).toThrow('Every named integration testcase');
 });
 test('integration report rejects an extra named testcase without the assertions attribute', () => {
-  const xml = report('', 384).replace('extra.test.js" assertions="1"', 'extra.test.js"');
+  const xml = report('', minimumPostgresTests + 1).replace('extra.test.js" assertions="1"', 'extra.test.js"');
   expect(() => assertPostgresReport(xml)).toThrow('Every named integration testcase');
 });
 test('integration report accepts additional named cases with assertions and ignores unnamed hooks', () => {
-  expect(() => assertPostgresReport(report('', 384))).not.toThrow();
-  const xml = report('', 384).replace('name="passed-383"', 'name="(unnamed)"')
+  expect(() => assertPostgresReport(report('', minimumPostgresTests + 1))).not.toThrow();
+  const xml = report('', minimumPostgresTests + 1).replace(`name="passed-${minimumPostgresTests}"`, 'name="(unnamed)"')
     .replace('extra.test.js" assertions="1"', 'extra.test.js" assertions="0"');
   expect(() => assertPostgresReport(xml)).not.toThrow();
 });
@@ -76,18 +76,20 @@ test.each([
   expect(() => assertPostgresReport(xml)).toThrow();
 });
 
-test('manifest retains every historical per-file minimum and adds both required SQS suites', () => {
+test('manifest retains every historical per-file minimum and requires the outbox reservation suite', () => {
   expect(requiredIntegrationSuites).toEqual([
     ['postgres', 55], ['wallet-opening', 32], ['wager-processing', 9], ['wager-identity', 32],
     ['bet-processing', 31], ['win-loss-processing', 41], ['reference-processing', 36], ['reversal-processing', 90],
     ['http-api', 5], ['wager-atomicity', 6], ['wager-multiprocess', 10], ['sqs-inbox', 17],
     ['sqs-retry-dlq', 13], ['sqs-financial-protection', 6],
+    ['outbox-reservation', 14],
   ]);
-  expect(minimumPostgresTests).toBe(383);
+  expect(minimumPostgresTests).toBe(397);
   expect(() => assertPostgresReport(report('', 364))).toThrow();
+  expect(() => assertPostgresReport(report('', 383))).toThrow();
 });
 
-test.each(['sqs-retry-dlq', 'sqs-financial-protection'])('%s cannot be replaced by other cases, unnamed hooks, or cases without assertions', file => {
+test.each(['sqs-retry-dlq', 'sqs-financial-protection', 'outbox-reservation'])('%s cannot be replaced by other cases, unnamed hooks, or cases without assertions', file => {
   const xml = report(); const name = `${file}.test.js`;
   const path = new RegExp(`name="passed-\\d+" file="([^"]*${file}\\.test\\.js)" assertions="1"`);
   expect(() => assertPostgresReport(xml.replaceAll(name, 'extra.test.js'))).toThrow();
