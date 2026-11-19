@@ -1,10 +1,22 @@
 import { expect, test } from 'bun:test';
+import { JsonLogger } from '../../src/modules/operations/json-logger';
 import { ReconcileWallet, ReconciliationWalletNotFoundError, type ReconciliationSummary, type WalletReconciliationSnapshot } from '../../src/modules/wallets/application/reconcile-wallet';
 
 const wallet = { id: 'wallet', balance: { amount: '100.01', currency: 'BRL' }, version: 3 };
 const summary: ReconciliationSummary = {
   initialBalance: '100.00', credits: '0.02', debits: '0.01', calculatedBalance: '100.01', difference: '0.00', checkedEntries: 3, issues: [],
 };
+test('divergence has a sanitized event after the read transaction resolves, with no financial payload', async () => {
+  const lines: string[] = []; let committed = false;
+  const service = new ReconcileWallet({ snapshot: async work => {
+    const report = await work({ wallet: async () => wallet,
+      summarize: async () => ({ ...summary, difference: '-0.01' }) }); committed = true; return report;
+  } }, new JsonLogger(line => { if (committed) lines.push(line); }));
+  expect((await service.execute('wallet')).status).toBe('DIVERGENT');
+  await new Promise<void>(resolve => setImmediate(resolve));
+  expect(lines).toHaveLength(1); expect(JSON.parse(lines[0]!)).toMatchObject({ event: 'reconciliation.divergent', walletId: 'wallet', level: 'error' });
+  expect(lines[0]!).not.toContain('100.01'); expect(lines[0]!).not.toContain('difference');
+});
 function query(overrides: Partial<ReconciliationSummary> = {}, currency = 'BRL') {
   const calls: string[] = [];
   const snapshot: WalletReconciliationSnapshot = {

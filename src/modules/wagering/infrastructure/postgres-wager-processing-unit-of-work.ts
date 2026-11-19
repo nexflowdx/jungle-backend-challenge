@@ -3,6 +3,7 @@ import type { MikroORM } from '@mikro-orm/postgresql';
 import { ledgerMapper, outboxRecord, transactionMapper, walletMapper } from '../../../database/domain-mappers';
 import { InboxMessageRecord, WagerTransactionRecord, WalletRecord } from '../../../database/entities';
 import { runPostgresTransaction } from '../../../database/postgres-transaction';
+import { operationalMetrics } from '../../operations/operational-metrics';
 import { WagerProcessingRetryableError, WagerProcessingUnitOfWork, type WagerProcessingTransaction } from '../application/wager-processing-unit-of-work';
 import { WagerIdentityCollisionError } from '../application/wager-transaction-identity';
 import { WagerInboxConflictError, type WagerInboxIdentity } from '../application/wager-inbox';
@@ -216,6 +217,7 @@ export class PostgresWagerProcessingUnitOfWork extends WagerProcessingUnitOfWork
         } finally { active = false; }
       });
     } catch (error) {
+      operationalMetrics.observeSqlFailure(error);
       if (error instanceof DeadlockException && (error.code === '40P01' || error.code === '40001')) {
         throw new WagerProcessingRetryableError(error.code, error);
       }

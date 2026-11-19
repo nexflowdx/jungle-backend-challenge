@@ -3,6 +3,7 @@ import { wagerMessageIdentity } from './wager-message-identity';
 import { parseWagerTransactionRequested } from './wager-requested';
 import { JsonLogger, jsonLogger } from '../../operations/json-logger';
 import { runWithLogContext } from '../../operations/log-context';
+import { operationalMetrics } from '../../operations/operational-metrics';
 
 /** Explicit dispatch with atomic inbox; the caller may ACK only after this promise resolves. */
 export class SqsWagerCommandHandler {
@@ -12,7 +13,9 @@ export class SqsWagerCommandHandler {
     return runWithLogContext({ correlationId: request.messageId, messageId: request.messageId,
       walletId: request.data.walletId, providerId: request.data.providerId }, async () => {
       try {
-        const result = await this.processTransaction.execute({ ...request.data, correlationId: request.messageId, causationId: request.messageId }, wagerMessageIdentity(request));
+        const result = await operationalMetrics.measureProcessing(() => this.processTransaction.execute(
+          { ...request.data, correlationId: request.messageId, causationId: request.messageId }, wagerMessageIdentity(request)));
+        operationalMetrics.observeWager(result);
         this.logger.emit('info', 'sqs.command_committed', { transactionId: result.transactionId });
         return result;
       } catch (error) {

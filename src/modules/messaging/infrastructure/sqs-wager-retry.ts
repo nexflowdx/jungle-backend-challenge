@@ -1,6 +1,7 @@
 import { ChangeMessageVisibilityCommand, type ChangeMessageVisibilityCommandOutput } from '@aws-sdk/client-sqs';
 import { decideWagerDelivery, type WagerDeliveryDecision, type WagerDeliveryFailure } from '../application/wager-delivery-policy';
 import { configuration, type ReceivedRawWagerRequest, type SqsWagerConfiguration } from './sqs-wager-receiver';
+import { operationalMetrics } from '../../operations/operational-metrics';
 
 export interface SqsVisibilityClient {
   send(command: ChangeMessageVisibilityCommand): Promise<ChangeMessageVisibilityCommandOutput>;
@@ -31,7 +32,8 @@ export class SqsWagerRetry {
     // send-to-dlq is eligibility only; it must never fall through into deletion or success.
     if (decision.action !== 'retry') return Object.freeze({ kind: 'deferred', decision });
     const visibilityTimeout = Math.max(1, Math.min(60, Math.ceil(decision.delaySeconds)));
-    await this.client.send(new ChangeMessageVisibilityCommand({ QueueUrl: this.queueUrl, ReceiptHandle: receiptHandle, VisibilityTimeout: visibilityTimeout }));
+    const response = await this.client.send(new ChangeMessageVisibilityCommand({ QueueUrl: this.queueUrl, ReceiptHandle: receiptHandle, VisibilityTimeout: visibilityTimeout }));
+    if (response?.$metadata?.httpStatusCode === 200) operationalMetrics.increment('sqs_visibility_retries_confirmed');
     return Object.freeze({ kind: 'retry-scheduled', decision, visibilityTimeout });
   }
 }

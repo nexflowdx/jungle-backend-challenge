@@ -1,4 +1,7 @@
-# Arquitetura até 7.2 (validação PostgreSQL/SQS do incremento pendente)
+# Arquitetura e decisões implementadas
+
+As seções por incremento preservam o histórico das decisões. O estado operacional
+atual e as lacunas verificadas estão em `FINAL_REVIEW.md`; execução em `RUNBOOK.md`.
 
 Monólito modular NestJS: `WalletsModule`, `WageringModule`, `MessagingModule` e
 `OperationsModule`. O caso de uso de abertura está implementado em Wallets;
@@ -1205,3 +1208,50 @@ correlação persistida, replay com outro header, ordem commit/ACK e falhas sín
 e assíncronas do logger. Casos PostgreSQL/MiniStack foram acrescentados/ajustados
 no runner existente; sua aprovação exige execução real. Este incremento não
 implementa métricas, health checks ou novos workers.
+
+## Finalização — 9.3.2, 9.3.3 e 9.4
+
+`OperationalMetrics` mantém contadores de observações com nomes fixos, sem labels
+de carteira/provedor ou outras dimensões de alta cardinalidade. São efêmeros por
+processo, com instanceId e startedAt; snapshots são cópias e os contadores são
+strings inteiras exatas. Não servem como fonte histórica global. Replays são
+contados após o resultado existente; respostas incluem replay, não são transações
+únicas. Reagendamentos contam após persistência ou confirmação SDK HTTP 200.
+DLQ conta publicação confirmada, mesmo se o ACK posterior falhar; publicação
+incerta não conta. Deadlock, serialização e indisponibilidade de lock são separados.
+Timeout genérico não comprova conflito de lock. Os hooks são locais, sem I/O,
+exceções propagadas ou alteração de decisões financeiras/transportes.
+
+`PostgresOperationalMetrics` usa um snapshot REPEATABLE READ READ ONLY para estados
+atuais (gauge), transações com status registrado nos eventos retidos (DISTINCT por
+transação/status), quantidade/idade da outbox pendente e ciclo de vida de operações
+terminais. Esses agregados incluem OPENING; a duração inclui espera por referência
+e não equivale à latência de execução por tentativa. Retenção da outbox limita a
+cobertura histórica. O CLI administrativo `scripts/read-operational-metrics.ts`
+consulta apenas esse relatório de banco; não lê a memória de outro processo nem
+publica endpoint. `operationalMetrics.snapshot()` é uma API interna no processo
+instrumentado. Históricos completos de duplicatas, retries, DLQ e reconciliações
+não são inventados. SQL retries internos ficaram sem contador próprio para
+preservar o processador validado. A latência nas bordas HTTP/SQS usa relógio
+monotônico, conta sucessos/falhas/replays e inclui locks/retries internos; exclui
+ACK/transporte. Contagem, soma e máximo estão no snapshot local, sem histórico
+global. Falha do relógio não substitui resultado ou erro e não inventa duração.
+
+Reconciliações divergentes/inconclusivas emitem eventos JSON específicos após a
+conclusão da transação de leitura, somente com os identificadores permitidos.
+Não são registrados saldos, diferenças ou outros payloads financeiros.
+
+Health é público por requisito: `/health/live` confirma apenas HTTP ativo;
+`/health/ready` executa SELECT 1 e ListQueues (MaxResults 1), sem operações
+financeiras, recebimento/remoção de mensagens ou alteração de filas. Configuração
+SQS precisa ser explícita; não há fallback para endpoint AWS/IMDS. Cada dependência
+tem prazo de resposta de 1500 ms; SQS tem ainda connect timeout 500 ms, request
+timeout 1000 ms, maxAttempts 1 e AbortSignal. Falhas retornam apenas status up/down.
+
+Uma chamada I/O real por dependência permanece compartilhada até terminar, mesmo
+depois do timeout HTTP. Isso evita acumular consultas se o driver PostgreSQL não
+cancelar pelo AbortSignal. A consulta PG ainda está sujeita aos timeouts existentes
+do pool/driver e pode terminar depois da resposta 503. Liveness não faz probes.
+Readiness não comprova filas específicas, execução de consumidores, publicação
+de backlog ou funcionamento financeiro completo. O shutdown HTTP também fecha o
+cliente SQS de readiness e o ORM; não representa shutdown de consumidor SQS.

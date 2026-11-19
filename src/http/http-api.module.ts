@@ -14,12 +14,15 @@ import type { WalletReconciliationSource } from '../modules/wallets/application/
 import { WalletLedgerAccess, WalletLedgerAccessGuard, deniedWalletLedgerAccess } from './wallet-ledger-access.guard';
 import { JsonLogger, NestJsonLogger, jsonLogger } from '../modules/operations/json-logger';
 import { correlationMiddleware } from './correlation.middleware';
+import { HealthController } from './health.controller';
+import { ReadinessService, unavailableReadiness } from '../modules/operations/readiness';
 
 export interface HttpPersistence {
   readonly walletOpening: WalletOpeningUnitOfWork;
   readonly wagerProcessing: WagerProcessingUnitOfWork;
   readonly walletLedger?: WalletLedgerReader;
   readonly walletReconciliation?: WalletReconciliationSource;
+  readonly readiness?: ReadinessService;
   readonly close?: () => Promise<void>;
 }
 @Module({})
@@ -27,9 +30,10 @@ export class HttpApiModule {
   static register(persistence: HttpPersistence, ledgerAccess: WalletLedgerAccess = deniedWalletLedgerAccess, logger: JsonLogger = jsonLogger): DynamicModule {
     return { module: HttpApiModule,
       imports: [WalletsModule.register(persistence.walletOpening, persistence.walletLedger, persistence.walletReconciliation), WageringModule.register(persistence.wagerProcessing)],
-      controllers: [WalletsController, WageringTransactionsController],
+      controllers: [WalletsController, WageringTransactionsController, HealthController],
       providers: [WalletRequestPipe, WagerRequestPipe, ProviderAuthenticationGuard, { provide: APP_FILTER, useClass: HttpErrorFilter },
         { provide: JsonLogger, useValue: logger },
+        { provide: ReadinessService, useValue: persistence.readiness ?? unavailableReadiness() },
         WalletLedgerAccessGuard, { provide: WalletLedgerAccess, useValue: ledgerAccess },
         { provide: 'HTTP_PERSISTENCE_LIFECYCLE', useValue: { onApplicationShutdown: async () => { await persistence.close?.(); } } }],
     };

@@ -2,6 +2,7 @@ import type {
   OutboxReservation,
   ReservedOutboxEvent,
 } from './outbox-reservation';
+import { operationalMetrics } from '../../operations/operational-metrics';
 
 export interface OutboxEventPublisher {
   publish(
@@ -75,6 +76,7 @@ export class OutboxPublicationCoordinator {
         event.leaseToken,
         delaySeconds,
       );
+      if (scheduled) operationalMetrics.increment('outbox_retries_scheduled');
 
       return scheduled
         ? { status: 'retry-scheduled', eventId: event.id, delaySeconds }

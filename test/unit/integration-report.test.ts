@@ -87,8 +87,10 @@ test('manifest retains every historical per-file minimum and requires the outbox
     ['outbox-recovery', 1],
     ['wallet-ledger', 11],
     ['wallet-reconciliation', 17],
+    ['operational-metrics', 2],
+    ['health', 2],
   ]);
-  expect(minimumPostgresTests).toBe(445);
+  expect(minimumPostgresTests).toBe(449);
   expect(() => assertPostgresReport(report('', 364))).toThrow();
   expect(() => assertPostgresReport(report('', 383))).toThrow();
 });

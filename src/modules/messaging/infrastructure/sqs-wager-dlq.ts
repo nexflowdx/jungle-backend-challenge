@@ -5,6 +5,7 @@ import {
 } from '@aws-sdk/client-sqs';
 import { decideWagerDelivery, type WagerDeliveryDecision, type WagerDeliveryFailure } from '../application/wager-delivery-policy';
 import { configuration, type ReceivedRawWagerRequest, type SqsWagerConfiguration } from './sqs-wager-receiver';
+import { operationalMetrics } from '../../operations/operational-metrics';
 
 export interface SqsDlqClient {
   send(command: SendMessageCommand): Promise<SendMessageCommandOutput>;
@@ -114,6 +115,7 @@ export class SqsWagerDlq {
       throw new SqsWagerDlqError('DLQ_PUBLISH_UNCONFIRMED', 'dlq', uncertain, failure, 'Missing or invalid FIFO publication confirmation; source must be retained');
     }
     const publication = Object.freeze({ kind: 'confirmed' as const, transferId, messageId: response.MessageId, sequenceNumber: sequence });
+    operationalMetrics.increment('dlq_publications_confirmed');
     let ack: DeleteMessageCommandOutput;
     try {
       ack = await this.client.send(new DeleteMessageCommand({ QueueUrl: this.queueUrl, ReceiptHandle: receiptHandle }));

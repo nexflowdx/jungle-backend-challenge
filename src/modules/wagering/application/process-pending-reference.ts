@@ -4,6 +4,7 @@ import { FailureCode, WagerTransactionStatus as Status } from '../domain/wager-t
 import { createTransactionEvents } from '../domain/wagering.events';
 import { JsonLogger, jsonLogger } from '../../operations/json-logger';
 import { runWithLogContext, type LogIdentifiers } from '../../operations/log-context';
+import { operationalMetrics } from '../../operations/operational-metrics';
 
 export interface PendingReferenceWorkItem {
   readonly id: string;
@@ -106,6 +107,7 @@ export class ProcessPendingReference {
       return transaction.status === Status.Processed ? 'processed'
         : transaction.status === Status.Failed ? 'expired' : 'rejected';
     });
+    if (outcome === 'rescheduled') operationalMetrics.increment('reference_retries_scheduled');
     runWithLogContext(logContext, () => this.logger.emit('info', 'pending_reference.completed'));
     return outcome;
   }

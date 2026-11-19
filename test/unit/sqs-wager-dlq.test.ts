@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { operationalMetrics } from '../../src/modules/operations/operational-metrics';
 import { expect, mock, test } from 'bun:test';
 import {
   DeleteMessageCommand, GetQueueAttributesCommand, SendMessageCommand,
@@ -38,6 +39,14 @@ function fixture(options: {
   });
   return { send, adapter: new SqsWagerDlq({ send }, config, dlqUrl) };
 }
+
+test('DLQ metric records confirmed publication even if ACK fails, never an uncertain send', async () => {
+  const before = BigInt(operationalMetrics.snapshot().counters.dlq_publications_confirmed!);
+  await expect(fixture({ failAt: 'dlq', cause: new Error('uncertain') }).adapter.apply(raw, failure)).rejects.toMatchObject({ code: 'DLQ_PUBLISH_FAILED' });
+  expect(BigInt(operationalMetrics.snapshot().counters.dlq_publications_confirmed!)).toBe(before);
+  await expect(fixture({ failAt: 'ack', cause: new Error('ack failed') }).adapter.apply(raw, failure)).rejects.toMatchObject({ code: 'DLQ_ACK_FAILED' });
+  expect(BigInt(operationalMetrics.snapshot().counters.dlq_publications_confirmed!)).toBe(before + 1n);
+});
 
 test('explicit DLQ preserves the raw body and original group, then deletes only the source', async () => {
   const f = fixture(); expect(f.send).not.toHaveBeenCalled();

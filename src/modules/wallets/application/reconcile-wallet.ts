@@ -1,5 +1,7 @@
 import type { MoneyProps } from '../../../shared/domain/money';
 import { assertIdentifier } from '../../../shared/domain/financial-rules';
+import { operationalMetrics } from '../../operations/operational-metrics';
+import { JsonLogger, jsonLogger } from '../../operations/json-logger';
 
 export interface ReconciliationWallet {
   readonly id: string;
@@ -28,7 +30,7 @@ export abstract class WalletReconciliationSource {
 export class ReconciliationWalletNotFoundError extends Error {}
 
 export class ReconcileWallet {
-  constructor(private readonly source: WalletReconciliationSource) {}
+  constructor(private readonly source: WalletReconciliationSource, private readonly logger: JsonLogger = jsonLogger) {}
 
   execute(walletId: string) {
     assertIdentifier(walletId);
@@ -49,6 +51,11 @@ export class ReconcileWallet {
         status: !conclusive ? 'INCONCLUSIVE' as const : consistent ? 'CONSISTENT' as const : 'DIVERGENT' as const,
         issues: summary.issues,
       };
+    }).then(report => {
+      operationalMetrics.observeReconciliation(report.status);
+      if (report.status === 'DIVERGENT') this.logger.emit('error', 'reconciliation.divergent', { walletId: report.walletId });
+      if (report.status === 'INCONCLUSIVE') this.logger.emit('warn', 'reconciliation.inconclusive', { walletId: report.walletId });
+      return report;
     });
   }
 }
