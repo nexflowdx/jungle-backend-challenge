@@ -9,6 +9,7 @@ import { PostgresWalletOpeningUnitOfWork } from '../../src/modules/wallets/infra
 import { PostgresWagerProcessingUnitOfWork } from '../../src/modules/wagering/infrastructure/postgres-wager-processing-unit-of-work';
 import { assertPersistenceTestEnvironment } from './environment';
 import { httpRequest } from '../helpers/http-request';
+import { JsonLogger } from '../../src/modules/operations/json-logger';
 
 const enabled = process.env.PERSISTENCE_INTEGRATION === '1';
 type WalletResponse = { id: string; playerId: string; balance: { amount: string; currency: string }; version: number };
@@ -40,6 +41,23 @@ describe.skipIf(!enabled)('HTTP with real PostgreSQL and real NestJS providers (
     await application.init();
   }, 30000);
   afterAll(async () => { if (application) await application.close(); if (orm) await orm.close(true); });
+
+  test('HTTP correlation persists in outbox and changes on replay without new financial effects when logging rejects', async () => {
+    const app = await createHttpApplication({ walletOpening: new PostgresWalletOpeningUnitOfWork(orm), wagerProcessing: new PostgresWagerProcessingUnitOfWork(orm) },
+      { logger: false }, undefined, new JsonLogger(() => Promise.reject(new Error('LOG_SECRET'))));
+    await app.init();
+    try {
+      const wallet = await open(); const input = command(wallet); const headers = key(); let responseCorrelation: unknown;
+      const first = await httpRequest(app, '/wagering/transactions', input, [...headers, ['X-Correlation-Id', 'correlation-first']], undefined, 'POST', values => { responseCorrelation = values['x-correlation-id']; });
+      expect(first.status).toBe(200); expect(responseCorrelation).toBe('correlation-first');
+      const before = await snapshot(wallet); const transactionId = (first.body as TransactionResponse).transactionId;
+      const events = before.outbox.filter(row => (row.payload.data as { transactionId: string }).transactionId === transactionId);
+      expect(events).toHaveLength(2); expect(events.every(row => row.payload.correlationId === 'correlation-first')).toBe(true);
+      const replay = await httpRequest(app, '/wagering/transactions', input, [...headers, ['X-Correlation-Id', 'correlation-replay']], undefined, 'POST', values => { responseCorrelation = values['x-correlation-id']; });
+      expect(responseCorrelation).toBe('correlation-replay'); expect(replay).toEqual({ status: 200, body: { ...first.body as object, idempotentReplay: true } });
+      expect(await snapshot(wallet)).toEqual(before);
+    } finally { await app.close(); }
+  });
 
   test('wallet HTTP creates zero/positive openings and maps the actual duplicate constraint to 409', async () => {
     const zero = await open('0.00'); const positive = await open('9007199254740993.01', 'USD');

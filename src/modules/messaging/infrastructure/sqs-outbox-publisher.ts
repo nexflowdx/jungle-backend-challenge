@@ -4,6 +4,8 @@ import {
   type SendMessageCommandOutput,
 } from '@aws-sdk/client-sqs';
 import type { ReservedOutboxEvent } from '../application/outbox-reservation';
+import { JsonLogger, jsonLogger } from '../../operations/json-logger';
+import { runWithLogContext, type LogIdentifiers } from '../../operations/log-context';
 
 export interface SqsOutboxSendClient {
   send(
@@ -22,6 +24,7 @@ export class SqsOutboxPublisher {
   constructor(
     private readonly client: SqsOutboxSendClient,
     private readonly queueUrl: string,
+    private readonly logger: JsonLogger = jsonLogger,
   ) {
     let url: URL;
 
@@ -43,7 +46,30 @@ export class SqsOutboxPublisher {
     }
   }
 
-  async publish(
+  publish(event: ReservedOutboxEvent, abortSignal?: AbortSignal): Promise<OutboxPublication> {
+    let context: LogIdentifiers = {};
+    try {
+      const data = event.payload.data as Record<string, unknown> | undefined;
+      context = {
+        walletId: event.aggregateId,
+        ...(typeof event.payload.correlationId === 'string' ? { correlationId: event.payload.correlationId } : {}),
+        ...(typeof data?.transactionId === 'string' ? { transactionId: data.transactionId } : {}),
+        ...(typeof data?.providerId === 'string' ? { providerId: data.providerId } : {}),
+      };
+    } catch { /* Observability must not add new publication validation failures. */ }
+    return runWithLogContext(context, async () => {
+      try {
+        const result = await this.publishEvent(event, abortSignal);
+        this.logger.emit('info', 'outbox.publication_confirmed');
+        return result;
+      } catch (error) {
+        this.logger.emit('error', 'outbox.publication_failed');
+        throw error;
+      }
+    });
+  }
+
+  private async publishEvent(
     event: ReservedOutboxEvent,
     abortSignal?: AbortSignal,
   ): Promise<OutboxPublication> {

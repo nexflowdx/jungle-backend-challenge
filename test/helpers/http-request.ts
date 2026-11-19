@@ -1,12 +1,12 @@
 import type { INestApplication } from '@nestjs/common';
-import { type IncomingMessage, ServerResponse } from 'node:http';
+import { type IncomingMessage, type OutgoingHttpHeaders, ServerResponse } from 'node:http';
 import type { Socket } from 'node:net';
 import { Duplex, Readable } from 'node:stream';
 
 /** Real Nest/Express routing, parsers and response serialization, through in-memory HTTP streams.
  * Opens no listener or network connection. These tests do not replace PostgreSQL integration.
  */
-export function httpRequest(application: INestApplication, path: string, body: unknown, headers: readonly (readonly [string, string])[] = [], rawBody?: string, method = 'POST'): Promise<{ status: number; body: unknown }> {
+export function httpRequest(application: INestApplication, path: string, body: unknown, headers: readonly (readonly [string, string])[] = [], rawBody?: string, method = 'POST', captureHeaders?: (headers: OutgoingHttpHeaders) => void): Promise<{ status: number; body: unknown }> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     const socket = new Duplex({ read() {}, write(chunk: Buffer, _encoding, done) { chunks.push(Buffer.from(chunk)); done(); } });
@@ -24,6 +24,7 @@ export function httpRequest(application: INestApplication, path: string, body: u
     request.on('error', reject); response.on('error', reject);
     response.on('finish', () => {
       try {
+        captureHeaders?.(response.getHeaders());
         const text = Buffer.concat(chunks).toString('utf8').split('\r\n\r\n').slice(1).join('\r\n\r\n');
         resolve({ status: response.statusCode, body: text ? JSON.parse(text) as unknown : undefined });
       } catch (error) { reject(error); }

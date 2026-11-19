@@ -11,6 +11,7 @@ import { WagerInboxConflictError } from '../../src/modules/wagering/application/
 import { WagerIdentityConflictError } from '../../src/modules/wagering/application/wager-transaction-identity';
 import { WagerTransactionKind as Kind, WagerTransactionStatus as Status, FailureCode } from '../../src/modules/wagering/domain/wager-transaction.types';
 import { SqsWagerCommandHandler } from '../../src/modules/messaging/application/sqs-wager-command-handler';
+import { JsonLogger } from '../../src/modules/operations/json-logger';
 import { SqsWagerDelivery } from '../../src/modules/messaging/infrastructure/sqs-wager-delivery';
 import { SqsWagerReceiver, type SqsWagerConfiguration, type ReceivedWagerRequest } from '../../src/modules/messaging/infrastructure/sqs-wager-receiver';
 import { parseWagerTransactionRequested, type WagerTransactionRequested } from '../../src/modules/messaging/application/wager-requested';
@@ -84,7 +85,7 @@ describe.skipIf(!enabled)('Atomic inbox and post-commit SQS ACK (7.2, real Postg
         const row = await inbox(envelope); expect(row!.processedAt).toBeInstanceOf(Date); await assertWalletLedger(orm, wallet, '75.00');
         return client.send(command);
       } };
-      const result = await new SqsWagerDelivery(new SqsWagerCommandHandler(processor()), realAck, config).execute(delivered);
+      const result = await new SqsWagerDelivery(new SqsWagerCommandHandler(processor(), new JsonLogger(() => Promise.reject(new Error('LOG_SECRET')))), realAck, config).execute(delivered);
       expect(result.status).toBe(Status.Processed); expect((await inbox(envelope))!.payloadHash).toBe(wagerMessageIdentity(envelope).payloadHash);
       expect(await new SqsWagerReceiver(client, { ...config, waitTimeSeconds: 0 }).receiveOnce()).toBeUndefined();
     });

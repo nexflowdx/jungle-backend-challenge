@@ -3,6 +3,7 @@ import { PostgresPendingReferenceSelector } from '../src/modules/wagering/infras
 import { PostgresWagerProcessingUnitOfWork } from '../src/modules/wagering/infrastructure/postgres-wager-processing-unit-of-work';
 import { ProcessPendingReference } from '../src/modules/wagering/application/process-pending-reference';
 import { RunPendingReferenceBatch } from '../src/modules/wagering/application/run-pending-reference-batch';
+import { jsonLogger } from '../src/modules/operations/json-logger';
 
 async function main(): Promise<void> {
   const required = (name: string): string => {
@@ -35,7 +36,7 @@ async function main(): Promise<void> {
     const runner = new RunPendingReferenceBatch(selector, processor);
     const result = await runner.execute();
 
-    console.log('Pending reference batch result:', JSON.stringify(result));
+    jsonLogger.emit('info', 'pending_reference.batch_completed');
 
     if (result.failed > 0) {
       process.exitCode = 1;
@@ -45,7 +46,7 @@ async function main(): Promise<void> {
   }
 }
 
-void main().catch(error => {
-  console.error('Pending reference batch failed:', error);
+void main().catch(() => {
+  jsonLogger.emit('error', 'pending_reference.worker_failed');
   process.exitCode = 1;
 });

@@ -2,6 +2,8 @@ import { randomUUID } from 'node:crypto';
 import type { WagerProcessingUnitOfWork } from './wager-processing-unit-of-work';
 import { FailureCode, WagerTransactionStatus as Status } from '../domain/wager-transaction.types';
 import { createTransactionEvents } from '../domain/wagering.events';
+import { JsonLogger, jsonLogger } from '../../operations/json-logger';
+import { runWithLogContext, type LogIdentifiers } from '../../operations/log-context';
 
 export interface PendingReferenceWorkItem {
   readonly id: string;
@@ -20,10 +22,12 @@ export class ProcessPendingReference {
     private readonly unitOfWork: WagerProcessingUnitOfWork,
     private readonly now: () => Date = () => new Date(),
     private readonly newId: () => string = randomUUID,
+    private readonly logger: JsonLogger = jsonLogger,
   ) {}
 
   async execute(item: PendingReferenceWorkItem): Promise<PendingReferenceOutcome> {
-    return this.unitOfWork.transaction(async scope => {
+    let logContext: LogIdentifiers = { transactionId: item.id, walletId: item.walletId };
+    const outcome = await this.unitOfWork.transaction(async scope => {
       if (!scope.loadPendingReferenceSchedule
         || !scope.loadPendingReferenceContext
         || !scope.completePendingReference
@@ -38,6 +42,7 @@ export class ProcessPendingReference {
       if (!transaction || transaction.status !== Status.PendingReference) {
         return 'skipped';
       }
+      logContext = { ...logContext, providerId: transaction.providerId };
 
       const schedule = await scope.loadPendingReferenceSchedule(item.id);
       if (!schedule) return 'skipped';
@@ -89,6 +94,7 @@ export class ProcessPendingReference {
       if (entry) await scope.insertLedgerEntry(entry);
 
       const context = await scope.loadPendingReferenceContext(transaction.id);
+      logContext = { ...logContext, correlationId: context.correlationId, providerId: transaction.providerId };
       const events = createTransactionEvents(transaction, wallet, entry, () => ({
         ...context,
         eventId: this.newId(),
@@ -100,5 +106,7 @@ export class ProcessPendingReference {
       return transaction.status === Status.Processed ? 'processed'
         : transaction.status === Status.Failed ? 'expired' : 'rejected';
     });
+    runWithLogContext(logContext, () => this.logger.emit('info', 'pending_reference.completed'));
+    return outcome;
   }
 }

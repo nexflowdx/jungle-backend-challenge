@@ -3,12 +3,13 @@ import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 import { createHttpApplication } from './http/http-api.module';
 import { createHttpPersistence, httpDatabaseConnection } from './http/runtime-persistence';
+import { jsonLogger } from './modules/operations/json-logger';
 
 async function main(): Promise<void> {
   if (process.argv.includes('--bootstrap-only')) {
     const application = await NestFactory.createApplicationContext(AppModule, { logger: false, abortOnError: false });
     await application.close();
-    console.log('NestJS bootstrap passed');
+    jsonLogger.emit('info', 'application.bootstrap_passed');
     return;
   }
 
@@ -26,6 +27,6 @@ async function main(): Promise<void> {
 }
 
 main().catch(() => {
-  console.error('Application bootstrap failed');
+  jsonLogger.emit('error', 'application.bootstrap_failed');
   process.exitCode = 1;
 });

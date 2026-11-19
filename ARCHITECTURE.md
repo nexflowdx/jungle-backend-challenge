@@ -1155,4 +1155,53 @@ Os testes PostgreSQL incluem barreira após a leitura da carteira, commit concor
 por outro manager, preservação do snapshot, verificação de isolamento/read-only e
 rejeição de escrita pelo banco. Essas garantias só são validadas com execução real;
 os testes unitários de contratos não substituem essa evidência. Logs e métricas de
-divergência ficam para o Marco 9.3, conforme o escopo autorizado.
+divergência ficam para os próximos incrementos do Marco 9.3, conforme o escopo autorizado.
+
+## Marco 9.3.1 — Logs JSON e correlação
+
+`operations/json-logger.ts` emite uma linha JSON com `timestamp`, `level`, `event`
+e apenas os identificadores conhecidos: `correlationId`, `messageId`,
+`transactionId`, `walletId`, `providerId`. Eventos pertencem a uma lista fixa;
+identificadores são strings ASCII limitadas a 256 caracteres, sem espaços/controles.
+Campos extras, erros arbitrários, tokens, credenciais, receipt handles, jogadores,
+causationId e payloads financeiros não são serializados. O adaptador de logger do
+Nest mantém o formato JSON e descarta mensagens arbitrárias do framework.
+
+`AsyncLocalStorage` mantém os identificadores originais em cópias imutáveis por
+execução; a filtragem da saída não normaliza a correlação dos comandos/eventos.
+IDs incompatíveis com a política de saída são omitidos do log. HTTP usa middleware
+instalado por `createHttpApplication` antes do parser JSON e dos guards. Um único
+`X-Correlation-Id` de 1 a 128 caracteres em `[A-Za-z0-9._:-]` é aceito; ausências,
+duplicatas e valores inválidos geram UUID. O identificador é devolvido no header,
+inclusive em respostas de erro, e repassado aos comandos de abertura/processamento.
+Ele continua excluído de payloadHash e idempotencyKey e não concede autorização.
+
+O handler SQS inicia contexto próprio com o messageId do envelope, preservando a
+correlação e causationId já utilizados no comando. O identificador de transporte
+SQS não é messageId de domínio. Na publicação da outbox, a correlação vem do payload
+persistido; o ID retornado pelo broker e o causationId não são convertidos em
+messageId para logging. Referências terminais reutilizam o contexto original já
+lido pelo fluxo existente, sem consulta extra. Se esse contexto não foi carregado
+(por exemplo, reagendamento/skip), o log omite correlationId; não inventa contexto.
+Eventos já persistidos e corpos publicados permanecem inalterados.
+
+Logs de abertura e processamento são emitidos após o retorno do commit. O handler
+SQS registra `sqs.command_committed` antes do ACK existente, sem antecipá-lo;
+`outbox.publication_confirmed` confirma apenas o envio ao SQS, não o registro de
+confirmação no banco. Falhas preservam as exceções e políticas existentes. Bootstrap
+e worker de referências substituem seus logs pontuais por eventos JSON sanitizados.
+
+A escrita é best effort: o logger captura os campos na emissão, agenda a saída por
+microtask e usa `fs.write` assíncrono com callback de erro tratado. Sinks injetados
+podem lançar ou rejeitar promises; essas falhas são contidas e nunca aguardadas
+pelo negócio. Não há retry de logging, persistência ou garantia de entrega/flush.
+Logs podem se perder por indisponibilidade, encerramento ou escrita parcial; sob
+pressão de saída, a implementação não oferece uma fila durável nem garantia de
+memória limitada. Um sink personalizado que bloqueie sincronamente também não
+pode ser preemptado pelo JavaScript. O sink padrão não espera pelo I/O.
+
+Testes cobrem whitelist, JSON, headers, isolamento concorrente com barreiras,
+correlação persistida, replay com outro header, ordem commit/ACK e falhas síncronas
+e assíncronas do logger. Casos PostgreSQL/MiniStack foram acrescentados/ajustados
+no runner existente; sua aprovação exige execução real. Este incremento não
+implementa métricas, health checks ou novos workers.

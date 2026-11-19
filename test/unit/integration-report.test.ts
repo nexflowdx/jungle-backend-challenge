@@ -80,7 +80,7 @@ test('manifest retains every historical per-file minimum and requires the outbox
   expect(requiredIntegrationSuites).toEqual([
     ['postgres', 55], ['wallet-opening', 32], ['wager-processing', 9], ['wager-identity', 32],
     ['bet-processing', 31], ['win-loss-processing', 41], ['reference-processing', 43], ['reversal-processing', 90],
-    ['http-api', 5], ['wager-atomicity', 6], ['wager-multiprocess', 10], ['sqs-inbox', 17],
+    ['http-api', 6], ['wager-atomicity', 6], ['wager-multiprocess', 10], ['sqs-inbox', 17],
     ['sqs-retry-dlq', 13], ['sqs-financial-protection', 6],
     ['outbox-reservation', 14], ['outbox-confirmation', 5], ['outbox-retry', 5],
     ['sqs-outbox-publication', 1],
@@ -88,7 +88,7 @@ test('manifest retains every historical per-file minimum and requires the outbox
     ['wallet-ledger', 11],
     ['wallet-reconciliation', 17],
   ]);
-  expect(minimumPostgresTests).toBe(444);
+  expect(minimumPostgresTests).toBe(445);
   expect(() => assertPostgresReport(report('', 364))).toThrow();
   expect(() => assertPostgresReport(report('', 383))).toThrow();
 });

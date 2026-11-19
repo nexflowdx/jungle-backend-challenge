@@ -12,6 +12,8 @@ import { ProviderAuthenticationGuard } from './provider-authentication.guard';
 import type { WalletLedgerReader } from '../modules/wallets/application/read-wallet-ledger';
 import type { WalletReconciliationSource } from '../modules/wallets/application/reconcile-wallet';
 import { WalletLedgerAccess, WalletLedgerAccessGuard, deniedWalletLedgerAccess } from './wallet-ledger-access.guard';
+import { JsonLogger, NestJsonLogger, jsonLogger } from '../modules/operations/json-logger';
+import { correlationMiddleware } from './correlation.middleware';
 
 export interface HttpPersistence {
   readonly walletOpening: WalletOpeningUnitOfWork;
@@ -22,16 +24,20 @@ export interface HttpPersistence {
 }
 @Module({})
 export class HttpApiModule {
-  static register(persistence: HttpPersistence, ledgerAccess: WalletLedgerAccess = deniedWalletLedgerAccess): DynamicModule {
+  static register(persistence: HttpPersistence, ledgerAccess: WalletLedgerAccess = deniedWalletLedgerAccess, logger: JsonLogger = jsonLogger): DynamicModule {
     return { module: HttpApiModule,
       imports: [WalletsModule.register(persistence.walletOpening, persistence.walletLedger, persistence.walletReconciliation), WageringModule.register(persistence.wagerProcessing)],
       controllers: [WalletsController, WageringTransactionsController],
       providers: [WalletRequestPipe, WagerRequestPipe, ProviderAuthenticationGuard, { provide: APP_FILTER, useClass: HttpErrorFilter },
+        { provide: JsonLogger, useValue: logger },
         WalletLedgerAccessGuard, { provide: WalletLedgerAccess, useValue: ledgerAccess },
         { provide: 'HTTP_PERSISTENCE_LIFECYCLE', useValue: { onApplicationShutdown: async () => { await persistence.close?.(); } } }],
     };
   }
 }
-export function createHttpApplication(persistence: HttpPersistence, options: NestApplicationOptions = {}, ledgerAccess: WalletLedgerAccess = deniedWalletLedgerAccess) {
-  return NestFactory.create(HttpApiModule.register(persistence, ledgerAccess), { abortOnError: false, ...options });
+export async function createHttpApplication(persistence: HttpPersistence, options: NestApplicationOptions = {}, ledgerAccess: WalletLedgerAccess = deniedWalletLedgerAccess, logger: JsonLogger = jsonLogger) {
+  const application = await NestFactory.create(HttpApiModule.register(persistence, ledgerAccess, logger), { abortOnError: false, logger: new NestJsonLogger(logger), ...options });
+  // Register before init's JSON parser and guards, including malformed-body errors.
+  application.use(correlationMiddleware(logger));
+  return application;
 }

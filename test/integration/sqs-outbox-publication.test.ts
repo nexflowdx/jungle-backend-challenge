@@ -9,6 +9,7 @@ import {
 } from '@aws-sdk/client-sqs';
 import type { ReservedOutboxEvent } from '../../src/modules/messaging/application/outbox-reservation';
 import { SqsOutboxPublisher } from '../../src/modules/messaging/infrastructure/sqs-outbox-publisher';
+import { JsonLogger } from '../../src/modules/operations/json-logger';
 import { assertSqsTestEnvironment } from '../helpers/sqs-test-environment';
 
 const enabled = process.env.PERSISTENCE_INTEGRATION === '1';
@@ -68,7 +69,7 @@ describe.skipIf(!enabled)('SQS outbox publication (real MiniStack)', () => {
         aggregateId: randomUUID(),
         eventType: 'WagerAccepted',
         eventVersion: 1,
-        payload: { transactionId: randomUUID(), status: 'accepted' },
+        payload: { correlationId: 'persisted-correlation', causationId: 'CAUSATION_SECRET', data: { transactionId: randomUUID(), providerId: 'provider' } },
         occurredAt: new Date('2026-11-18T10:00:00.000Z'),
         attempts: 1,
         nextAttemptAt: null,
@@ -77,12 +78,16 @@ describe.skipIf(!enabled)('SQS outbox publication (real MiniStack)', () => {
         leaseUntil: new Date('2026-11-18T10:00:30.000Z'),
       };
 
-      const publisher = new SqsOutboxPublisher(client, queueUrl);
+      const lines: string[] = [];
+      const publisher = new SqsOutboxPublisher(client, queueUrl, new JsonLogger(line => lines.push(line)));
       const published = await publisher.publish(event);
 
       expect(published.eventId).toBe(event.id);
       expect(published.messageId.length).toBeGreaterThan(0);
       expect(published.sequenceNumber).toMatch(/^\d+$/);
+      await new Promise<void>(resolve => setImmediate(resolve));
+      expect(JSON.parse(lines[0]!)).toMatchObject({ correlationId: 'persisted-correlation', walletId: event.aggregateId, event: 'outbox.publication_confirmed' });
+      expect(lines[0]!).not.toContain('SECRET'); expect(lines[0]!).not.toContain('messageId');
 
       const received = await client.send(new ReceiveMessageCommand({
         QueueUrl: queueUrl,
@@ -109,7 +114,7 @@ describe.skipIf(!enabled)('SQS outbox publication (real MiniStack)', () => {
 
       // Simulates a successful send followed by a lost database confirmation.
       // A recovered publisher sends the same durable event identity again.
-      const repeated = await publisher.publish({
+      const repeated = await new SqsOutboxPublisher(client, queueUrl, new JsonLogger(() => Promise.reject(new Error('LOG_SECRET')))).publish({
         ...event,
         attempts: 2,
         leaseToken: randomUUID(),

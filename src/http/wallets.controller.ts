@@ -1,18 +1,20 @@
 import { Body, Controller, Get, HttpCode, Inject, Optional, Param, Post, Query, ServiceUnavailableException, UseGuards } from '@nestjs/common';
-import { randomUUID } from 'node:crypto';
 import { OpenWallet } from '../modules/wallets/application/open-wallet';
 import { ProviderAuthenticationGuard } from './provider-authentication.guard';
 import { WalletRequestPipe, type WalletRequest } from './request-validation';
 import { ReadWalletLedger } from '../modules/wallets/application/read-wallet-ledger';
 import { WalletLedgerAccessGuard } from './wallet-ledger-access.guard';
 import { ReconcileWallet } from '../modules/wallets/application/reconcile-wallet';
+import { JsonLogger, jsonLogger } from '../modules/operations/json-logger';
+import { httpCorrelationId } from './correlation.middleware';
 
 @Controller('wallets')
 @UseGuards(ProviderAuthenticationGuard)
 export class WalletsController {
   constructor(@Inject(OpenWallet) private readonly openWallet: OpenWallet,
     @Optional() @Inject(ReadWalletLedger) private readonly readLedger?: ReadWalletLedger,
-    @Optional() @Inject(ReconcileWallet) private readonly reconcileWallet?: ReconcileWallet) {}
+    @Optional() @Inject(ReconcileWallet) private readonly reconcileWallet?: ReconcileWallet,
+    @Optional() @Inject(JsonLogger) private readonly logger: JsonLogger = jsonLogger) {}
   @Post(':walletId/reconciliation')
   @HttpCode(200)
   @UseGuards(WalletLedgerAccessGuard)
@@ -29,6 +31,8 @@ export class WalletsController {
   @Post()
   @HttpCode(201)
   async create(@Body(WalletRequestPipe) request: WalletRequest) {
-    return this.openWallet.execute({ ...request, correlationId: randomUUID() });
+    const result = await this.openWallet.execute({ ...request, correlationId: httpCorrelationId() });
+    this.logger.emit('info', 'wallet.opened', { walletId: result.id });
+    return result;
   }
 }

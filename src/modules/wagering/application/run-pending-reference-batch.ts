@@ -2,6 +2,8 @@ import type {
   PendingReferenceWorkItem,
   PendingReferenceOutcome,
 } from './process-pending-reference';
+import { JsonLogger, jsonLogger } from '../../operations/json-logger';
+import { runWithLogContext } from '../../operations/log-context';
 
 export interface PendingReferenceSelector {
   findDue(limit: number): Promise<readonly PendingReferenceWorkItem[]>;
@@ -25,6 +27,7 @@ export class RunPendingReferenceBatch {
   constructor(
     private readonly selector: PendingReferenceSelector,
     private readonly processor: PendingReferenceProcessor,
+    private readonly logger: JsonLogger = jsonLogger,
   ) {}
 
   async execute(limit = 50): Promise<PendingReferenceBatchResult> {
@@ -48,12 +51,9 @@ export class RunPendingReferenceBatch {
       try {
         const outcome = await this.processor.execute(item);
         result[outcome]++;
-      } catch (error) {
+      } catch {
         result.failed++;
-        console.error('Pending reference processing failed', {
-          transactionId: item.id,
-          error: error instanceof Error ? error.message : String(error),
-        });
+        runWithLogContext({ transactionId: item.id, walletId: item.walletId }, () => this.logger.emit('error', 'pending_reference.failed'));
       }
     }
 

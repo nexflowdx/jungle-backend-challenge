@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test';
+import { JsonLogger } from '../../src/modules/operations/json-logger';
 import {
   RunPendingReferenceBatch,
   type PendingReferenceSelector,
@@ -36,13 +37,9 @@ describe('RunPendingReferenceBatch', () => {
       },
     };
 
-    const originalError = console.error;
-    const errors: unknown[][] = [];
-    console.error = (...args: unknown[]) => { errors.push(args); };
-
-    try {
+    const lines: string[] = [];
       const result = await new RunPendingReferenceBatch(
-        selector, processor,
+        selector, processor, new JsonLogger(line => lines.push(line)),
       ).execute(6);
 
       expect(result).toEqual({
@@ -56,10 +53,10 @@ describe('RunPendingReferenceBatch', () => {
       });
 
       expect(visited).toEqual(items.map(item => item.id));
-      expect(errors).toHaveLength(1);
-    } finally {
-      console.error = originalError;
-    }
+      await new Promise<void>(resolve => setImmediate(resolve));
+      expect(lines).toHaveLength(1);
+      expect(JSON.parse(lines[0]!)).toMatchObject({ level: 'error', event: 'pending_reference.failed', transactionId: 'transaction-5', walletId: 'wallet' });
+      expect(lines[0]!).not.toContain('Simulated failure');
   });
 
   test('counts legitimate expirations without operational failures', async () => {
