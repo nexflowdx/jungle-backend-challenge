@@ -10,19 +10,21 @@ import { WalletRequestPipe, WagerRequestPipe } from './request-validation';
 import { HttpErrorFilter } from './http-error.filter';
 import { ProviderAuthenticationGuard } from './provider-authentication.guard';
 import type { WalletLedgerReader } from '../modules/wallets/application/read-wallet-ledger';
+import type { WalletReconciliationSource } from '../modules/wallets/application/reconcile-wallet';
 import { WalletLedgerAccess, WalletLedgerAccessGuard, deniedWalletLedgerAccess } from './wallet-ledger-access.guard';
 
 export interface HttpPersistence {
   readonly walletOpening: WalletOpeningUnitOfWork;
   readonly wagerProcessing: WagerProcessingUnitOfWork;
   readonly walletLedger?: WalletLedgerReader;
+  readonly walletReconciliation?: WalletReconciliationSource;
   readonly close?: () => Promise<void>;
 }
 @Module({})
 export class HttpApiModule {
   static register(persistence: HttpPersistence, ledgerAccess: WalletLedgerAccess = deniedWalletLedgerAccess): DynamicModule {
     return { module: HttpApiModule,
-      imports: [WalletsModule.register(persistence.walletOpening, persistence.walletLedger), WageringModule.register(persistence.wagerProcessing)],
+      imports: [WalletsModule.register(persistence.walletOpening, persistence.walletLedger, persistence.walletReconciliation), WageringModule.register(persistence.wagerProcessing)],
       controllers: [WalletsController, WageringTransactionsController],
       providers: [WalletRequestPipe, WagerRequestPipe, ProviderAuthenticationGuard, { provide: APP_FILTER, useClass: HttpErrorFilter },
         WalletLedgerAccessGuard, { provide: WalletLedgerAccess, useValue: ledgerAccess },

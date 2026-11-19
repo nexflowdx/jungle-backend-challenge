@@ -1090,3 +1090,69 @@ com casos de precisão monetária e de microssegundos, desempate, múltiplas pá
 isolamento, autorização, entradas inválidas, inserção entre páginas e comparação
 do estado financeiro antes/depois. Sua aprovação depende de execução real no
 ambiente isolado; testes unitários não substituem essa evidência.
+
+## Marco 9.2 — Reconciliação interna somente leitura
+
+`ReconcileWallet` recebe `WalletReconciliationSource`. O adaptador
+`PostgresWalletReconciliationSource` abre um EntityManager próprio e uma única
+transação `REPEATABLE READ READ ONLY`, usando as opções nativas do MikroORM/Knex.
+Leitura da carteira e agregação do ledger usam esse mesmo manager, conexão e
+snapshot. Não há `FOR UPDATE`, alterações financeiras, eventos ou correções.
+O serviço pode ser registrado opcionalmente em `WalletsModule.register` ou
+instanciado por um consumidor interno com o adaptador. O complemento HTTP expõe
+`POST /wallets/:walletId/reconciliation`, delegando integralmente ao mesmo serviço.
+O endpoint reutiliza `WalletLedgerAccessGuard` e sua política por carteira: permanece
+bloqueado por padrão (403), antes de qualquer consulta, até uma integração confiável
+validar identidade e permissão para a carteira. O guard de provedor existente, que
+aceita todas as requisições, não concede essa autorização.
+
+Respostas CONSISTENT e DIVERGENT usam HTTP 200, com `consistent` true e false,
+respectivamente. INCONCLUSIVE também usa 200, com `consistent`, `calculatedBalance`
+e `difference` nulos e motivos explícitos. Carteira inexistente retorna 404 somente
+após autorização; falhas transitórias retornam 503 e falhas inesperadas, 500, sem
+SQL, credenciais ou detalhes internos. A composição antiga sem adaptador continua
+válida e retorna 503 se uma consulta autorizada não tiver o serviço disponível.
+Nenhuma CLI pública ou autenticação fictícia foi adicionada.
+
+A abertura positiva já existe como `OPENING` processada e crédito da versão 1,
+com saldo anterior zero. A reconciliação exige correspondência entre lançamento,
+transação, carteira, moeda e valor. Esse valor é o `initialBalance`; créditos e
+débitos posteriores **excluem OPENING**. Assim, `calculatedBalance = initialBalance
++ credits - debits` contabiliza a abertura exatamente uma vez.
+
+Sem OPENING, zero só é inferido quando não há transação nem lançamento de abertura
+e existe carteira de versão 1 com saldo zero e ledger vazio, ou primeiro lançamento
+da versão 2 com saldo anterior zero. Também são verificadas sequência de versões,
+continuidade de saldos, moeda, aritmética, estado e correspondência das transações,
+além de operações processadas sem lançamento. As verificações complementam as
+constraints e triggers existentes; não reexecutam toda a política de referências.
+Histórico sem evidência de abertura retorna `INITIAL_BALANCE_UNPROVEN`, sem
+inventar valor inicial. Outros indícios incluem `INVALID_LEDGER_ENTRIES`,
+`INVALID_LEDGER_SEQUENCE` e `MISSING_FINANCIAL_ENTRIES`.
+
+O relatório traz carteira, moeda, saldo persistido, abertura, créditos posteriores,
+débitos, saldo calculado, diferença **persistido menos calculado**, contagem,
+`consistent` e status `CONSISTENT`, `DIVERGENT` ou `INCONCLUSIVE`. Na ausência de
+evidência ou com ledger inválido, saldo calculado e diferença são nulos;
+`consistent` também é nulo. Falhas SQL/conexão e carteira inexistente propagam
+erros distintos, sem serem convertidas em divergências financeiras.
+
+Agregações e subtração ocorrem em `NUMERIC` no PostgreSQL, sem ponto flutuante e
+sem limitar o volume histórico ao teto de um Money individual. O Money existente
+valida o saldo persistido; agregados e diferença assinada são serializados como
+strings decimais com duas casas. Não houve alteração de Money, schema ou migrations.
+
+A suíte `wallet-reconciliation` faz parte do manifesto obrigatório de integração.
+Para divergências artificiais, cria um schema `reconciliation_fixture_<uuid>` com
+`LIKE public.<tabela> INCLUDING DEFAULTS`, sem copiar checks, FKs, índices únicos
+ou triggers; copia apenas as carteiras de teste necessárias e altera somente essas
+cópias. Nenhuma proteção das tabelas públicas é desativada. O schema é removido no
+encerramento. Os testes também verificam que a corrupção equivalente na tabela
+pública é rejeitada pelos triggers normais. A fixture usa configuração de schema
+própria do ORM, e o adaptador qualifica os nomes das tabelas sem alterar search_path.
+
+Os testes PostgreSQL incluem barreira após a leitura da carteira, commit concorrente
+por outro manager, preservação do snapshot, verificação de isolamento/read-only e
+rejeição de escrita pelo banco. Essas garantias só são validadas com execução real;
+os testes unitários de contratos não substituem essa evidência. Logs e métricas de
+divergência ficam para o Marco 9.3, conforme o escopo autorizado.

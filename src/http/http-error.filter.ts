@@ -6,6 +6,7 @@ import { WagerIdentityCollisionError, WagerIdentityConflictError } from '../modu
 import { WagerProcessingRetryableError } from '../modules/wagering/application/wager-processing-unit-of-work';
 import { WagerProcessingNotImplementedError, WagerResultUnavailableError, WagerWalletNotFoundError } from '../modules/wagering/application/process-wager-transaction';
 import { InvalidLedgerQueryError, LedgerWalletNotFoundError } from '../modules/wallets/application/read-wallet-ledger';
+import { ReconciliationWalletNotFoundError } from '../modules/wallets/application/reconcile-wallet';
 
 export interface HttpResponse {
   status(code: number): HttpResponse;
@@ -23,7 +24,7 @@ function transient(error: unknown): boolean {
 export class HttpErrorFilter implements ExceptionFilter {
   catch(error: unknown, host: ArgumentsHost): void {
     const response = host.switchToHttp().getResponse<HttpResponse>();
-    if (error instanceof LedgerWalletNotFoundError) { response.status(404).json({ code: 'WALLET_NOT_FOUND', message: 'Wallet not found' }); return; }
+    if (error instanceof LedgerWalletNotFoundError || error instanceof ReconciliationWalletNotFoundError) { response.status(404).json({ code: 'WALLET_NOT_FOUND', message: 'Wallet not found' }); return; }
     if (error instanceof WalletAlreadyExistsError) { response.status(409).json({ code: error.code, message: 'Wallet already exists' }); return; }
     if (error instanceof WagerIdentityConflictError) { response.status(409).json({ code: error.code, reason: error.reason, message: 'Transaction identity conflict' }); return; }
     if (transient(error) || error instanceof HttpException && error.getStatus() === 503) { response.status(503).json({ code: 'SERVICE_UNAVAILABLE', message: 'Temporarily unable to process request' }); return; }

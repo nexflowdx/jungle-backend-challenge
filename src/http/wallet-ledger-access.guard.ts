@@ -1,7 +1,8 @@
 import { ForbiddenException, Inject, Injectable, type CanActivate, type ExecutionContext } from '@nestjs/common';
 import type { IncomingMessage } from 'node:http';
 
-/** Trusted server-side integration must validate identity and wallet ownership.
+/** Shared financial read policy for ledger history and reconciliation.
+ * Trusted server-side integration must validate identity and wallet ownership.
  * Never derive permission from a client-supplied wallet/provider/player header alone.
  */
 export abstract class WalletLedgerAccess {
