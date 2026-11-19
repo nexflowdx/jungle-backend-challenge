@@ -1,5 +1,10 @@
 # Revisão final — Jungle Gaming
 
+Atualização operacional: entrypoints contínuos de consumidor/publisher e shutdown
+foram implementados posteriormente. Resultados da validação, arquivos e limitações
+estão em [WORKERS_REVIEW.md](WORKERS_REVIEW.md). As contagens e comandos abaixo
+documentam a execução anterior, já validada na CI segundo o desenvolvedor.
+
 Base da execução autônoma: `develop`, commit `41e1a17`. Nenhum commit, push, deploy,
 provisionamento ou operação com custo externo foi executado.
 
@@ -58,19 +63,19 @@ regras de domínio, migrations, locks, idempotência, leases, políticas ou ACKs
 | Idempotência/concorrência | Constraints persistentes, lock por carteira, inbox/outbox atômicos existentes; CI real ainda necessária para esta revisão |
 | Ledger/reconciliação HTTP | Implementados, bloqueados 403 até autorização por carteira confiável |
 | Consultas GET wallet e transações por ID/provedor | **Ausentes** dos controllers atuais; não foram inventadas nem adicionadas nesta revisão |
-| SQS/DLQ | Adapters explícitos de receive/process/ACK, retry e DLQ existentes; sem consumer loop operacional |
-| SIGTERM do consumidor SQS | **Não implementado nem testado em consumidor real**. MessagingModule declara não iniciar consumer; SqsWagerDelivery não possui política de shutdown |
+| SQS/DLQ | Entrypoint contínuo compõe os adapters existentes, mantendo a política de retry/DLQ |
+| SIGTERM do consumidor SQS | Implementado com prazo de drenagem e bloqueio de ACK tardio; testes com sinais reais preparados para CI, sem validação real local |
 | Shutdown existente | HTTP fecha recursos; worker de referências trata SIGTERM após o lote. O worker de teste multiprocesso não é consumidor SQS |
-| Publisher de outbox | Coordinator.processOnce/factory existentes, sem entrypoint contínuo de publicação |
+| Publisher de outbox | Entrypoint contínuo reutiliza Coordinator.processOnce/factory; validação real desta implementação depende da CI |
 | Replay após reinício | Testes existentes reconstroem conexão/handler; isso não demonstra SIGTERM do consumidor nem kill real após commit antes de ACK |
 | Métricas | Snapshot local, latência HTTP/SQS e agregados persistidos disponíveis; históricos não persistidos declarados indisponíveis |
 | Autenticação | Guard de provedor ainda no-op, permitido pelo README; aplicação não deve ser exposta como serviço autenticado |
 | Health | Conectividade PG/SQS, não comprova consumidores, filas individuais ou todo o pipeline |
 | Compose | Existe ambiente isolado de integração e referência de worker; não há stack operacional completa de três instâncias/consumer/publisher |
 
-O desafio **não está integralmente concluído**. Consumer contínuo com shutdown e
-recuperação, publisher contínuo e consultas faltantes exigem incrementos próprios;
-implementá-los agora ultrapassaria uma correção pontual de baixo risco. Não houve
+O desafio **não está integralmente concluído**. Consultas HTTP faltantes e stack
+operacional completa permanecem fora deste incremento; a validação real dos novos
+workers depende da CI. Não houve
 alteração de infraestrutura/produção, instalação, commit, push, merge ou CI remota.
 
 PostgreSQL/MiniStack reais não estão disponíveis

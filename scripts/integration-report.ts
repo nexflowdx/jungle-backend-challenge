@@ -36,6 +36,8 @@ export const requiredIntegrationSuites = [
   ['wallet-reconciliation', 17],
   ['operational-metrics', 2],
   ['health', 2],
+  ['continuous-consumer', 5],
+  ['continuous-publisher', 3],
 ] as const;
 export const minimumPostgresTests = requiredIntegrationSuites.reduce((total, [, minimum]) => total + minimum, 0);
 

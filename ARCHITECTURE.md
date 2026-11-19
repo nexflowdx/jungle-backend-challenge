@@ -1255,3 +1255,45 @@ do pool/driver e pode terminar depois da resposta 503. Liveness não faz probes.
 Readiness não comprova filas específicas, execução de consumidores, publicação
 de backlog ou funcionamento financeiro completo. O shutdown HTTP também fecha o
 cliente SQS de readiness e o ORM; não representa shutdown de consumidor SQS.
+
+## Entrypoints contínuos SQS e outbox
+
+`scripts/run-sqs-consumer.ts` compõe o receiver raw, o mesmo ProcessWagerTransaction
+e inbox persistente, SqsWagerDelivery (ACK após resultado confirmado), SqsWagerRetry
+e SqsWagerDlq. Não altera regras financeiras, transações ou contratos de eventos.
+O loop recebe no máximo uma mensagem, sem prefetch ou paralelismo interno.
+SDK maxAttempts=1; long poll de 1–20 s, connect timeout 2 s e request timeout
+waitTimeSeconds+5 s. Filas/credenciais são explícitas; nada é provisionado.
+
+ConsumerFinancialEvidence observa callbacks e afterTransactionRollback no próprio
+contexto AsyncLocalStorage. Retry/DLQ por falha de processamento só usa rolled-back
+quando o callback falhou e o rollback foi confirmado. Callback concluído seguido
+de erro de commit fica uncertain, mesmo se houver hook de rollback; um commit
+anterior nunca é rebaixado por um rollback posterior. Falha anterior a transação
+é not-started. Não se deduz rollback de uma classe/code de erro. O observer não
+emite SQL nem cria fronteiras transacionais. Casos sem prova suficiente permanecem
+hold para redelivery/investigação, conforme a política já existente.
+
+`scripts/run-outbox-publisher.ts` usa createOutboxCoordinator/processOnce, sem
+novo mecanismo de retry. Reserva, lease de 30 s, deadline de publicação de 10 s,
+confirmação por token e backoff permanecem no coordenador/adapters existentes.
+A factory aceita a porta SqsOutboxSendClient já utilizada pelo publisher; SDK
+continua compatível. O wrapper combina o AbortSignal original com o prazo final
+de shutdown e recusa sends iniciados depois dele. Publicação incerta não marca
+published; outra instância pode reassumir o evento pelo mecanismo existente.
+
+Os loops compartilham apenas o ciclo serial e a gestão de sinais, não regras de
+negócio. SIGTERM/SIGINT param leituras/iterações futuras, interrompem o long poll e
+aguardam o trabalho ativo até o limite configurado. Repetir sinal não renova a
+graça nem volta ao comportamento padrão. Vencido o prazo, ACK financeiro tardio é
+bloqueado; o processo encerra não-zero após cleanup, com watchdog de graça+1 s
+se startup/cleanup não terminar. Não há devolução imediata da visibilidade durante
+transação incerta: o broker a disponibiliza ao expirar o prazo original.
+
+Encerramento abrupto pode coincidir com commit; a garantia é idempotência/inbox
+persistente na redelivery, não ausência de repetição. Um ACK em voo pode ter sido
+aceito, mas só foi iniciado após resultado seguro. Uma publicação em voo pode ter
+ocorrido sem confirmação local; lease e eventId estável preservam recuperação
+at-least-once. Não foi criado serviço externo, dependência, migration ou scheduler.
+Testes com sinais reais, commit/ACK incertos e leases recuperados estão no manifesto
+da CI; a execução local depende de permissões Docker/IPC.

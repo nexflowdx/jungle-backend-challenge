@@ -58,13 +58,31 @@ transação por ID e por provedor ainda estão pendentes.
 ```bash
 bun scripts/run-pending-references.ts
 bun scripts/run-pending-references-loop.ts
+bun scripts/run-sqs-consumer.ts
+bun scripts/run-outbox-publisher.ts
 bun scripts/read-operational-metrics.ts
 ```
 
-Os dois primeiros usam as variáveis PG e resolvem referências pendentes; o periódico
-trata SIGTERM concluindo o lote. Não são consumidores SQS. Não existe comando
-operacional de consumer SQS ou publisher contínuo: há adapters e coordinator/factory
-testados, cuja composição contínua e shutdown SQS permanecem pendentes.
+Execute cada processo contínuo em um terminal/processo separado. Os dois primeiros
+usam PG e resolvem referências pendentes; não são consumidores SQS.
+Os novos entrypoints reutilizam os adapters/coordenador existentes, com um trabalho
+por vez e SIGTERM/SIGINT. Configuração, limites, shutdown e validação local desta
+implementação estão em [WORKERS_REVIEW.md](WORKERS_REVIEW.md).
+
+Ambos exigem as variáveis PG, SQS_ENDPOINT e credenciais AWS explícitas descritas
+acima. Consumidor: SQS_QUEUE_URL e SQS_DLQ_URL; publisher: SQS_EVENTS_QUEUE_URL,
+cujo caminho deve terminar em `/wager-events.fifo`. Não são criadas filas ou schemas.
+O consumidor verifica FIFO, DLQ distinta e ausência de RedrivePolicy nativa antes
+de ler mensagens. Os contratos da DLQ continuam os existentes.
+
+Limites: WORKER_POLL_INTERVAL_MS=250 (10–60000), WORKER_SHUTDOWN_GRACE_MS=30000
+(1000–120000), SQS_WAIT_TIME_SECONDS=10 (1–20),
+SQS_VISIBILITY_TIMEOUT_SECONDS=120 (30–600). Ao parar, não começa outro trabalho;
+após a graça, o consumidor bloqueia ACK tardio. O processo sai com código 1 em
+timeout, com watchdog adicional de 1 segundo para startup/cleanup pendurados.
+Mensagens não confirmadas ficam para redelivery após a visibilidade existente;
+não há heartbeat, paralelismo interno ou reset de visibilidade durante commit.
+Eventos com publicação incerta continuam sujeitos ao lease/backoff original.
 
 O CLI de métricas faz somente leitura do banco; não consulta a memória do HTTP ou
 dos workers. Contadores efêmeros são acessíveis dentro da instância por

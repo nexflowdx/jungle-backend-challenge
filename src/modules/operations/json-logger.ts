@@ -8,6 +8,7 @@ const events = [
   'pending_reference.completed', 'pending_reference.failed', 'pending_reference.batch_completed', 'pending_reference.worker_failed',
   'application.bootstrap_passed', 'application.bootstrap_failed',
   'metrics.query_failed',
+  'worker.cycle_failed', 'worker.failed',
   'reconciliation.divergent', 'reconciliation.inconclusive',
   'framework.log', 'framework.warn', 'framework.error', 'framework.debug', 'framework.verbose', 'framework.fatal',
 ] as const;
