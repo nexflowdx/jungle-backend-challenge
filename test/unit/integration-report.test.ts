@@ -85,13 +85,14 @@ test('manifest retains every historical per-file minimum and requires the outbox
     ['outbox-reservation', 14], ['outbox-confirmation', 5], ['outbox-retry', 5],
     ['sqs-outbox-publication', 1],
     ['outbox-recovery', 1],
+    ['wallet-ledger', 11],
   ]);
-  expect(minimumPostgresTests).toBe(416);
+  expect(minimumPostgresTests).toBe(427);
   expect(() => assertPostgresReport(report('', 364))).toThrow();
   expect(() => assertPostgresReport(report('', 383))).toThrow();
 });
 
-test.each(['sqs-retry-dlq', 'sqs-financial-protection', 'outbox-reservation'])('%s cannot be replaced by other cases, unnamed hooks, or cases without assertions', file => {
+test.each(['sqs-retry-dlq', 'sqs-financial-protection', 'outbox-reservation', 'wallet-ledger'])('%s cannot be replaced by other cases, unnamed hooks, or cases without assertions', file => {
   const xml = report(); const name = `${file}.test.js`;
   const path = new RegExp(`name="passed-\\d+" file="([^"]*${file}\\.test\\.js)" assertions="1"`);
   expect(() => assertPostgresReport(xml.replaceAll(name, 'extra.test.js'))).toThrow();

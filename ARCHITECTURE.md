@@ -1041,3 +1041,52 @@ Os testes PostgreSQL acrescentam retentativas sem renovação, limite exato e po
 referência disponível, snapshot final do saldo, rollback, dois workers com barreiras
 de lock e seleção com próxima tentativa futura. Sua validação exige execução no
 ambiente isolado PostgreSQL/SQS; testes locais não comprovam essas garantias SQL.
+
+## Marco 9.1 — Leitura do ledger
+
+`GET /wallets/:walletId/ledger` usa `ReadWalletLedger` e a porta
+`WalletLedgerReader` no módulo de carteiras. O adaptador PostgreSQL reutiliza o
+índice `(wallet_id, created_at, id)` com ordenação `created_at DESC, id DESC`,
+predicado keyset `(created_at, id) < (cursorTimestamp, cursorId)` e `LIMIT limit + 1`.
+Não utiliza OFFSET, locks financeiros, flush ou gravações. Não altera os fluxos de
+processamento, inbox ou outbox.
+
+O limite padrão é 50; valores inteiros de 1 a 200 são aceitos como strings na query.
+A resposta contém `items`, `hasNextPage` e `nextCursor` (null na última página).
+Cada item contém `id`, `walletId`, `transactionId`, `direction`, `money`,
+`balanceBefore`, `balanceAfter`, `walletVersion` e `createdAt`. Dinheiro é serializado
+pelo `Money` existente como strings decimais. Carteira sem lançamentos retorna
+lista vazia; carteira inexistente retorna 404 após autorização. Cursor ou limite
+inválido retorna 400.
+
+O cursor é um contrato opaco versionado em base64url canônico com carteira,
+timestamp UTC e identificador. O parser valida estrutura, versão, calendário,
+limite de tamanho e vínculo com a carteira. Não é criptografado nem assinado:
+possuir ou construir um cursor não concede autorização. A consulta sempre filtra
+pela carteira da rota e usa parâmetros SQL.
+
+O timestamp é formatado em SQL com seis dígitos fracionários e UTC, transportado
+como string e convertido diretamente para `timestamptz` na comparação SQL.
+Não passa pelo `Date` do JavaScript, que perderia microssegundos. Por essa razão,
+a projeção de leitura não usa o mapper de domínio baseado em `Date` para esse campo.
+
+A paginação não mantém um snapshot entre requisições. Lançamentos novos com chave
+menor que a do cursor podem aparecer nas próximas páginas; lançamentos com chave
+maior exigem reiniciar a consulta. A ordem é estável para os registros existentes, sem
+repetição causada por inserções à frente do cursor. Isso não é reconciliação.
+
+**Limitação de acesso:** `ProviderAuthenticationGuard` continua sendo o ponto de
+extensão existente, que aceita todas as requisições. Ele não comprova identidade
+nem propriedade da carteira. A nova rota também exige `WalletLedgerAccessGuard`,
+que nega acesso por padrão (403), antes de consultar o banco. Uma integração
+confiável de identidade e propriedade deve fornecer `WalletLedgerAccess` na
+composição HTTP para habilitar a leitura. Nenhum header fornecido pelo cliente
+concede acesso na implementação padrão. A integração com IdP permanece pendente;
+os testes fornecem permissões apenas como fixtures locais. Os endpoints anteriores
+preservam seu comportamento.
+
+A suíte `wallet-ledger` está no manifesto obrigatório da integração em containers,
+com casos de precisão monetária e de microssegundos, desempate, múltiplas páginas,
+isolamento, autorização, entradas inválidas, inserção entre páginas e comparação
+do estado financeiro antes/depois. Sua aprovação depende de execução real no
+ambiente isolado; testes unitários não substituem essa evidência.

@@ -6,14 +6,14 @@ import { Duplex, Readable } from 'node:stream';
 /** Real Nest/Express routing, parsers and response serialization, through in-memory HTTP streams.
  * Opens no listener or network connection. These tests do not replace PostgreSQL integration.
  */
-export function httpRequest(application: INestApplication, path: string, body: unknown, headers: readonly (readonly [string, string])[] = [], rawBody?: string): Promise<{ status: number; body: unknown }> {
+export function httpRequest(application: INestApplication, path: string, body: unknown, headers: readonly (readonly [string, string])[] = [], rawBody?: string, method = 'POST'): Promise<{ status: number; body: unknown }> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     const socket = new Duplex({ read() {}, write(chunk: Buffer, _encoding, done) { chunks.push(Buffer.from(chunk)); done(); } });
     const request = new Readable({ read() {}, autoDestroy: false }) as IncomingMessage;
     Object.assign(request, { socket, connection: socket, complete: false });
     const data = rawBody ?? JSON.stringify(body) ?? '';
-    request.method = 'POST'; request.url = path; request.httpVersion = '1.1'; request.httpVersionMajor = 1; request.httpVersionMinor = 1;
+    request.method = method; request.url = path; request.httpVersion = '1.1'; request.httpVersionMajor = 1; request.httpVersionMinor = 1;
     const values = [['content-type', 'application/json'], ['content-length', String(Buffer.byteLength(data))], ...headers] as const;
     Object.defineProperty(request, 'headers', { value: {}, writable: true });
     request.rawHeaders = values.flatMap(([key, value]) => [key, value]);
